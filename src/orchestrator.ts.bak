@@ -1,0 +1,184 @@
+import type { AgentConfig, ChatMessage, Message, OrchestratorDecision, Session } from './types.js';
+import { chatCompletion, streamChatCompletion, parseJSONResponse } from './llm.js';
+
+const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F8B500'];
+const EMOJIS = ['🔬', '💡', '⚖️', '🎯', '🌍', '🔮', '📊', '🧩'];
+
+// ── Setup: generate agent panel ──────────────────────────────────────────
+
+export async function setupAgents(topic: string, userPreference?: string): Promise<AgentConfig[]> {
+  const system = `You are a discussion moderator assembling a roundtable panel.
+Given a topic, propose 3-5 agents with DISTINCT perspectives that produce a rich, multi-angle discussion.
+
+Respond in strict JSON (no markdown fences):
+{
+  "agents": [
+    {
+      "name": "Display Name (short, memorable)",
+      "role": "One-line role title",
+      "perspective": "What unique angle this agent brings (1-2 sentences)"
+    }
+  ]
+}`;
+
+  const user = userPreference
+    ? `Topic: ${topic}\n\nUser's panel preferences: ${userPreference}`
+    : `Topic: ${topic}`;
+
+  const raw = await chatCompletion(
+    [{ role: 'system', content: system }, { role: 'user', content: user }],
+    { temperature: 0.8 },
+  );
+
+  const parsed = parseJSONResponse(raw);
+  return parsed.agents.map((a: any, i: number) => ({
+    id: `agent-${i}`,
+    name: a.name,
+    role: a.role,
+    perspective: a.perspective,
+    color: COLORS[i % COLORS.length],
+    emoji: EMOJIS[i % EMOJIS.length],
+  }));
+}
+
+// ── Orchestrator decision ────────────────────────────────────────────────
+
+export async function getDecision(session: Session): Promise<OrchestratorDecision> {
+  const agentList = session.agents
+    .map(a => `  - id="${a.id}" name="${a.name}" role="${a.role}"`)
+    .join('\n');
+
+  const system = `You are the moderator of a collaborative roundtable exploration. Your goal is to help diverse perspectives BUILD ON each other to produce insights none could reach alone.
+
+Topic: ${session.topic}
+Agents:
+${agentList}
+
+Current round: ${session.round}
+Messages so far: ${session.messages.length}
+
+YOUR PRIMARY JOB: Guide agents to engage with each other's ideas and synthesize better conclusions together.
+
+When writing the "prompt" field, you MUST:
+1. Reference a SPECIFIC point from a previous speaker
+2. Ask the next speaker to ENGAGE with it — extend it, nuance it, combine it with their own angle, or respectfully challenge a specific assumption
+3. Encourage SYNTHESIS: "How does X's point about cost interact with Y's concern about privacy? Can you find a framework that addresses both?"
+4. Push for ACTIONABLE INSIGHTS, not just opinions: "Given what everyone has said, what's the concrete recommendation?"
+
+Examples of GOOD prompts:
+- "阿强提到本地延迟200ms，小李说成本趋零。从你的隐私视角，能否提出一个兼顾这三个维度的选型框架？"
+- "小周的合规担忧和阿强的性能优势看似矛盾，你觉得有没有一种方案能同时解决？"
+- "基于前面三人的讨论，你觉得大家在哪一点上其实是一致的？共识之上还能推进什么？"
+
+Examples of BAD prompts (AVOID):
+- "请从XX角度分享你的看法" ← isolated monologue
+- "反驳一下XX的观点" ← pure confrontation without synthesis
+
+Rules:
+- In each round, let each agent speak at least once before moving to a new round.
+- After round 1, EVERY prompt must connect to at least one previous speaker's argument.
+- Prioritize prompts that ask for SYNTHESIS, NUANCE, or NOVEL COMBINATIONS of ideas.
+- Move to a new round when a new synthesis angle or deeper dimension emerges.
+- Conclude after 2-4 rounds, especially when agents start converging or producing actionable frameworks.
+- If a user injected a message, weave it into the next prompt naturally.
+- The nextSpeaker MUST be one of the agent ids listed above.
+
+Respond in strict JSON (no markdown):
+{
+  "action": "continue" | "new_round" | "conclude",
+  "nextSpeaker": "agent-id (required if action != conclude)",
+  "prompt": "A question that encourages engagement with others' ideas AND pushes toward synthesis or deeper insight",
+  "reason": "Brief explanation"
+}`;
+
+  const msgs: ChatMessage[] = [
+    { role: 'system', content: system },
+    ...formatHistory(session.messages),
+    { role: 'user', content: 'Decide what happens next.' },
+  ];
+
+  const raw = await chatCompletion(msgs, { temperature: 0.4 });
+  return parseJSONResponse(raw) as OrchestratorDecision;
+}
+
+// ── Agent response (streaming) ───────────────────────────────────────────
+
+export function getAgentResponse(
+  agent: AgentConfig,
+  session: Session,
+  prompt: string,
+): AsyncGenerator<string> {
+  const system = `You are ${agent.name}, a participant in a collaborative roundtable discussion.
+Role: ${agent.role}
+Perspective: ${agent.perspective}
+
+Topic: ${session.topic}
+
+You are here to THINK TOGETHER with others, not to win an argument. The goal is for the group to reach better insights than any individual could alone.
+
+DISCUSSION RULES:
+1. ENGAGE with others by name. Reference their specific points — agree, extend, nuance, or respectfully challenge.
+   Good: "阿强提到的200ms延迟，从成本角度补充一点——这其实意味着..."
+   Good: "小李的边际成本分析很有说服力，不过如果结合小周的隐私视角，还有一个维度值得考虑..."
+   Bad: "从我的角度来看..." (monologue — don't do this)
+2. BUILD on others' ideas. Look for ways to COMBINE perspectives into something better.
+   "如果把阿强说的性能优势和小周的隐私方案结合起来，其实可以..."
+3. When you disagree, explain WHY and offer a better alternative. Don't just poke holes.
+4. Push toward ACTIONABLE conclusions: concrete recommendations, decision frameworks, specific scenarios where X is better than Y.
+5. Keep it focused — 2-3 paragraphs. This is a conversation, not a lecture.
+6. Have a clear perspective, but stay open to being convinced or finding middle ground.`;
+
+  const msgs: ChatMessage[] = [
+    { role: 'system', content: system },
+    ...formatHistory(session.messages),
+    { role: 'user', content: `[Moderator → ${agent.name}]: ${prompt}` },
+  ];
+
+  return streamChatCompletion(msgs);
+}
+
+// ── Summary (streaming) ──────────────────────────────────────────────────
+
+export function generateSummary(session: Session): AsyncGenerator<string> {
+  const agentList = session.agents.map(a => `${a.emoji} ${a.name} — ${a.role}`).join('\n');
+
+  const system = `You are the moderator writing a comprehensive discussion summary.
+
+Topic: ${session.topic}
+Panel:
+${agentList}
+
+Write a well-structured summary with:
+1. Topic overview & why it matters
+2. Key arguments from each perspective
+3. Points of agreement
+4. Points of contention
+5. Synthesized insights / conclusions
+6. Open questions for further exploration
+
+Use markdown headers and bullet points. Be thorough but readable.`;
+
+  const msgs: ChatMessage[] = [
+    { role: 'system', content: system },
+    ...formatHistory(session.messages),
+    { role: 'user', content: 'Write the comprehensive summary now.' },
+  ];
+
+  return streamChatCompletion(msgs);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+function formatHistory(messages: Message[]): ChatMessage[] {
+  return messages.map(m => {
+    const prefix =
+      m.type === 'agent' ? `[${m.agentName}]` :
+      m.type === 'user' ? '[User]' :
+      `[Moderator]`;
+    // Alternate roles so the LLM sees a conversation
+    return {
+      role: (m.type === 'agent' ? 'assistant' : 'user') as 'user' | 'assistant',
+      content: `${prefix}: ${m.content}`,
+    };
+  });
+}

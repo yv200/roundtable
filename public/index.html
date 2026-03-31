@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Roundtable v2 — Structured Multi-Agent Research</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- ═══ Setup Phase ═══ -->
+    <section id="setup" class="phase active">
+      <div class="setup-container">
+        <div class="logo">🎙️</div>
+        <h1>Roundtable <span class="version">v2</span></h1>
+        <p class="subtitle">Structured Multi-Agent Research Discussion</p>
+
+        <div class="setup-form">
+          <label for="topic-input">Research Topic</label>
+          <textarea id="topic-input" rows="3"
+            placeholder="What should the agents research and discuss?"></textarea>
+
+          <label for="pref-input">
+            Panel Preferences <span class="optional">(optional)</span>
+          </label>
+          <textarea id="pref-input" rows="2"
+            placeholder='e.g. "Include an economist, a technologist, and a skeptic"'></textarea>
+
+          <button id="generate-btn" class="btn primary">
+            <span class="btn-text">Generate Plan</span>
+            <span class="btn-loading hidden">⏳ Planning...</span>
+          </button>
+        </div>
+
+        <!-- Plan preview -->
+        <div id="plan-panel" class="hidden">
+          <h2>Discussion Plan</h2>
+
+          <h3>📐 Sub-topics</h3>
+          <div id="plan-subtopics"></div>
+
+          <h3>👥 Discussion Panel</h3>
+          <div id="agent-cards"></div>
+
+          <div class="panel-actions">
+            <button id="regenerate-btn" class="btn secondary">🔄 Regenerate</button>
+            <button id="start-btn" class="btn primary">▶ Start Research</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Discussion Phase ═══ -->
+    <section id="discussion" class="phase">
+      <div class="discussion-layout game-view">
+        <aside id="sidebar">
+          <div class="sidebar-header">
+            <h2 id="topic-display"></h2>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="sidebar-label">Progress</div>
+            <div id="sidebar-progress"></div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="sidebar-label">Panel</div>
+            <div id="sidebar-agents"></div>
+          </div>
+
+          <div class="sidebar-status" id="status-display">Running</div>
+        </aside>
+
+        <div id="game-panel">
+          <div id="game-wrapper">
+            <div id="game-container"></div>
+            <div id="speech-bubble">
+              <div class="bubble-text"></div>
+              <div class="bubble-tail"></div>
+            </div>
+          </div>
+          <div id="hud-bar">
+            <div id="hud-progress"></div>
+            <div id="hud-agents"></div>
+          </div>
+          <div id="hud-log"></div>
+        </div>
+
+        <main id="chat">
+          <div id="messages"></div>
+          <div id="typing-indicator" class="hidden">
+            <div class="typing-dots"><span></span><span></span><span></span></div>
+            <span id="typing-name">Agent</span> <span id="typing-label">is thinking…</span>
+          </div>
+        </main>
+      </div>
+
+      <div id="controls">
+        <button id="view-toggle-btn" class="btn" title="Switch view">🎮 Game View</button>
+        <button id="pause-btn" class="btn">⏸ Pause</button>
+        <div id="inject-container" class="hidden">
+          <input id="inject-input" type="text" placeholder="Add your thoughts…" />
+          <button id="inject-btn" class="btn">Send</button>
+          <button id="resume-btn" class="btn primary">▶ Resume</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Complete Phase ═══ -->
+    <section id="complete" class="phase">
+      <div class="complete-container">
+        <div class="complete-header">
+          <div class="logo">✅</div>
+          <h1>Research Complete</h1>
+          <p class="subtitle" id="complete-topic"></p>
+        </div>
+        <div id="summary-content"></div>
+        <div id="conflicts-section" class="hidden">
+          <h3>⚠️ Identified Conflicts</h3>
+          <div id="conflicts-content"></div>
+        </div>
+        <div class="complete-actions">
+          <button id="export-btn" class="btn secondary">📋 Export Markdown</button>
+          <button id="new-btn" class="btn primary">🎙️ New Research</button>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script src="game.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
