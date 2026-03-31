@@ -240,6 +240,11 @@ async function runDiscussion(session: Session) {
         broadcast(session, 'thinking', { agentId: agent.id, agentName: agent.name });
         const reasoning = await getAgentReasoning(agent, session, st, prompt);
         console.log(`[${agent.name}] reasoning done (${reasoning.length} chars)`);
+        broadcast(session, 'reasoning', {
+          agentId: agent.id, agentName: agent.name,
+          reasoning, color: agent.color, emoji: agent.emoji,
+          subTopicId: st.id,
+        });
         if (!session.agentReasoning[agent.id]) session.agentReasoning[agent.id] = [];
         session.agentReasoning[agent.id].push(reasoning);
 
@@ -287,6 +292,11 @@ async function runDiscussion(session: Session) {
                 agent, session, st, target.issue, target.request);
               if (!session.agentReasoning[agent.id]) session.agentReasoning[agent.id] = [];
               session.agentReasoning[agent.id].push(critiqueReasoning);
+              broadcast(session, 'reasoning', {
+                agentId: agent.id, agentName: agent.name,
+                reasoning: critiqueReasoning, color: agent.color, emoji: agent.emoji,
+                subTopicId: st.id,
+              });
 
               if (session.status !== 'running') return;
 

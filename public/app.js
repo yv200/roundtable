@@ -43,6 +43,7 @@ const hudProgress = $('#hud-progress');
 const hudAgents = $('#hud-agents');
 const hudLog = $('#hud-log');
 let agentSpeakCounts = {};
+let pendingReasoning = {};
 
 // ═══ Phase ═══════════════════════════════════════════════════════════════
 function showPhase(name) {
@@ -193,12 +194,25 @@ function connectSSE() {
 
   eventSource.addEventListener('message_start', e => {
     const data = JSON.parse(e.data);
+
+    // Insert reasoning collapsible if we have pending reasoning for this agent
+    const pr = pendingReasoning[data.agentId];
+    if (pr) {
+      const reasoningEl = document.createElement('details');
+      reasoningEl.className = 'reasoning-block';
+      reasoningEl.style.borderLeftColor = pr.color || '#666';
+      reasoningEl.innerHTML = `<summary>🧠 ${esc(pr.agentName)}'s private reasoning</summary><div class="reasoning-content">${renderMarkdown(pr.reasoning)}</div>`;
+      messagesEl.appendChild(reasoningEl);
+      delete pendingReasoning[data.agentId];
+    }
+
     const el = createMessageEl(data);
     messagesEl.appendChild(el);
     streamingMessages[data.id] = {
       el, content: '', bodyEl: el.querySelector('.message-body'),
       isSummary: data.type === 'summary',
       agentId: data.agentId,
+      color: data.color,
     };
     showTyping(false);
     scrollToBottom();
@@ -218,7 +232,7 @@ function connectSSE() {
       });
     }
     if (s.agentId) {
-      GameBridge.showBubble(s.agentId, s.content);
+      GameBridge.showBubble(s.agentId, s.content, s.color);
     }
   });
 
@@ -244,6 +258,15 @@ function connectSSE() {
     showTyping(true, agentName, true);
     GameBridge.setThinking(agentId);
     renderHudAgents(null);
+  });
+
+  eventSource.addEventListener('reasoning', e => {
+    const { agentId, agentName, reasoning, color, emoji } = JSON.parse(e.data);
+    // Store reasoning to attach to the next message from this agent
+    pendingReasoning[agentId] = { agentName, reasoning, color, emoji };
+    // Show excerpt in game bubble
+    const excerpt = reasoning.length > 120 ? reasoning.slice(0, 117) + '...' : reasoning;
+    GameBridge.showBubble(agentId, '🧠 ' + excerpt, color);
   });
 
   eventSource.addEventListener('speaking', e => {
@@ -339,7 +362,8 @@ function createMessageEl(data) {
         ${data.emoji ? `<span class="message-emoji">${data.emoji}</span>` : ''}
         <span class="message-name" style="color: ${data.color || 'var(--text)'}">${esc(data.agentName)}</span>
       </div>
-      <div class="message-body" style="--agent-color: ${data.color || 'var(--text-dim)'}"></div>`;
+      <div class="message-body"></div>`;
+  div.style.setProperty('--agent-color', data.color || 'var(--text-dim)');
   }
   return div;
 }
@@ -622,7 +646,7 @@ if (new URLSearchParams(location.search).has('preview')) {
         content += chunk;
         bodyEl.innerHTML = renderMarkdown(content);
         scrollToBottom();
-        GameBridge.showBubble(line.agentId, content);
+        GameBridge.showBubble(line.agentId, content, line.color);
       }, 60 + Math.random() * 40);
     }, thinkDuration);
   }

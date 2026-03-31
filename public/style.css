@@ -448,7 +448,7 @@ textarea:focus, input:focus {
   padding: 10px 14px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.95);
-  border: 2px solid rgba(26, 26, 46, 0.3);
+  border: 2.5px solid rgba(26, 26, 46, 0.3);
   color: #1a1a2e;
   font-family: 'Courier New', monospace;
   font-size: 11px;
@@ -523,11 +523,11 @@ textarea:focus, input:focus {
 
 .message-body {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 2px solid var(--agent-color, var(--accent));
   border-radius: var(--radius);
   border-top-left-radius: 4px;
   padding: 1rem 1.25rem;
-  border-left: 3px solid var(--agent-color, var(--accent));
+  border-left-width: 4px;
   font-size: 0.95rem;
   line-height: 1.7;
 }
@@ -733,3 +733,35 @@ textarea:focus, input:focus {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* Reasoning collapsible block */
+.reasoning-block {
+  margin: 4px 12px 2px 12px;
+  padding: 0;
+  border-left: 3px solid #666;
+  border-radius: 4px;
+  font-size: 0.82em;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+.reasoning-block:hover { opacity: 1; }
+.reasoning-block summary {
+  cursor: pointer;
+  padding: 4px 10px;
+  color: #888;
+  font-size: 0.85em;
+  user-select: none;
+}
+.reasoning-block summary:hover { color: #aaa; }
+.reasoning-block[open] summary { color: #bbb; margin-bottom: 4px; }
+.reasoning-content {
+  padding: 6px 12px 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 0 0 4px 4px;
+  color: #999;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.reasoning-content p { margin: 0 0 6px 0; }
+.reasoning-content strong { color: #bbb; }
