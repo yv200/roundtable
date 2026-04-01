@@ -5,6 +5,7 @@ import type { Response } from 'express';
 export interface AgentConfig {
   id: string;
   name: string;
+  gender: 'male' | 'female';   // Must match sprite — male sprites: 1,3,5; female: 0,2,4
   role: string;
   perspective: string;
   speakingStyle: string;        // How this agent communicates — tone, structure, habits

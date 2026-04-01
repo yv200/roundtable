@@ -1,5 +1,14 @@
 import type { AgentConfig, ChatMessage, Message, Session, SubTopic } from './types.js';
+import type { ResearchResult } from './research.js';
 import { chatCompletion, streamChatCompletion } from './llm.js';
+
+function formatResearch(research: ResearchResult | null): string {
+  if (!research) return '';
+  const citationList = research.citations.length
+    ? '\nSources:\n' + research.citations.map((c, i) => `[${i + 1}] ${c}`).join('\n')
+    : '';
+  return `\n\n--- WEB RESEARCH (use this data to support your arguments) ---\n${research.content}${citationList}\n--- END RESEARCH ---`;
+}
 
 // ── Private reasoning (not shared with other agents) ─────────────────────
 
@@ -8,6 +17,7 @@ export async function getAgentReasoning(
   session: Session,
   subTopic: SubTopic,
   prompt: string,
+  research: ResearchResult | null = null,
 ): Promise<string> {
   // ISOLATION: Only public statements — no other agents' system prompts or reasoning
   const publicStatements = session.messages
@@ -32,14 +42,14 @@ Current sub-topic: ${subTopic.title}
 Goal: ${subTopic.goal}
 ${previousSummaries ? `\nPrevious sub-topic conclusions:\n${previousSummaries}\n` : ''}
 This is your PRIVATE reasoning space. No one else will see this. Be brutally honest.
-
+${research ? `\nYou have web research available — USE IT. Cite specific data, numbers, and sources to build stronger arguments. Reference sources as [1], [2] etc.` : ''}
 Analyze the discussion and plan your response:
 1. **What are the strongest points others made?** Be specific — who said what.
 2. **Where are the weak spots or things you disagree with?** Why exactly?
 3. **What's YOUR unique angle that hasn't been covered?** Don't repeat existing points.
-4. **What specific claim will you challenge, and with what evidence/logic?**
-5. **What's your core position?** One sentence.
-6. **How will you express this in your personal style?** Plan your delivery.
+4. **What specific claim will you challenge, and with what evidence/logic?**${research ? '\n5. **What data from your research supports your position?** Cite specifics.' : ''}
+${research ? '6' : '5'}. **What's your core position?** One sentence.
+${research ? '7' : '6'}. **How will you express this in your personal style?** Plan your delivery.
 
 Think critically. Acknowledge where you might be wrong. Identify the most interesting tension or gap in the discussion so far.`;
 
@@ -55,7 +65,8 @@ Think critically. Acknowledge where you might be wrong. Identify the most intere
     msgs.push({ role: 'user', content: `Public discussion so far:\n${publicStatements}` });
   }
 
-  msgs.push({ role: 'user', content: `Moderator's direction for you: ${prompt}\n\nWrite your private analysis now.` });
+  const researchBlock = formatResearch(research);
+  msgs.push({ role: 'user', content: `Moderator's direction for you: ${prompt}${researchBlock}\n\nWrite your private analysis now.` });
 
   return chatCompletion(msgs, { temperature: 0.7 });
 }
@@ -68,6 +79,7 @@ export function getAgentResponse(
   subTopic: SubTopic,
   prompt: string,
   reasoning: string,
+  research: ResearchResult | null = null,
 ): AsyncGenerator<string> {
   // ISOLATION: Only public statements from others — no system prompts, no private reasoning
   const publicStatements = session.messages
@@ -97,7 +109,7 @@ RULES:
 4. Have a CLEAR POSITION. Defend it.
 5. 2-3 paragraphs. Conversation, not lecture.
 6. Do NOT reveal that you had a private reasoning step. Just present your arguments naturally.
-
+${research ? '7. CITE DATA from your research. Use [1], [2] etc. to reference sources. Back claims with real numbers.' : ''}
 AVOID: "首先...其次...总之" every time. Vary your format.`;
 
   const msgs: ChatMessage[] = [
@@ -108,13 +120,13 @@ AVOID: "首先...其次...总之" every time. Vary your format.`;
     msgs.push({ role: 'user', content: `Public discussion so far:\n${publicStatements}` });
   }
 
-  // Agent's own private reasoning — only this agent sees it
   msgs.push({
     role: 'user',
     content: `[Your private analysis — for your eyes only, do not quote or reference this directly]\n${reasoning}`,
   });
 
-  msgs.push({ role: 'user', content: `Now write your public statement.` });
+  const researchBlock = formatResearch(research);
+  msgs.push({ role: 'user', content: `Now write your public statement.${researchBlock}` });
 
   return streamChatCompletion(msgs);
 }

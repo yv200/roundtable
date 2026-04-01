@@ -257,7 +257,10 @@ function connectSSE() {
     const s = streamingMessages[id];
     if (s) {
       s.bodyEl.innerHTML = renderMarkdown(s.content);
-      if (s.isSummary) lastSummaryContent = s.content;
+      if (s.isSummary) {
+        lastSummaryContent = s.content;
+        appendDownloadBar(s.el);
+      }
       const agent = agents.find(a => a.id === s.agentId);
       if (agent) addHudLog(agent.name, agent.color, s.content);
       delete streamingMessages[id];
@@ -271,9 +274,68 @@ function connectSSE() {
     document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
     const saEl = document.getElementById(`sa-${agentId}`);
     if (saEl) saEl.classList.add('thinking');
-    showTyping(true, agentName, true);
+    showTyping(true, agentName, 'thinking');
     GameBridge.setThinking(agentId);
     renderHudAgents(null);
+  });
+
+  eventSource.addEventListener('researching', e => {
+    const { agentId, agentName } = JSON.parse(e.data);
+    document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
+    const saEl = document.getElementById(`sa-${agentId}`);
+    if (saEl) saEl.classList.add('thinking');
+    showTyping(true, agentName, 'searching');
+    GameBridge.setThinking(agentId);
+    GameBridge.showBubble(agentId, '🔍 Searching the web...', null);
+
+    const toolEl = document.createElement('div');
+    toolEl.className = 'tool-call';
+    toolEl.id = `tool-${agentId}`;
+    toolEl.innerHTML = `
+      <div class="tool-call-header">
+        <span class="tool-call-icon">⚡</span>
+        <span class="tool-call-label">Tool Call</span>
+        <span class="tool-call-fn">web_search</span>
+        <span class="tool-call-agent" style="color: ${agents.find(a => a.id === agentId)?.color || '#aaa'}">${esc(agentName)}</span>
+        <span class="tool-call-status loading">searching…</span>
+      </div>
+      <div class="tool-call-body">
+        <div class="tool-call-spinner"></div>
+      </div>`;
+    messagesEl.appendChild(toolEl);
+    scrollToBottom();
+  });
+
+  eventSource.addEventListener('research', e => {
+    const { agentId, agentName, query, content, citations, color } = JSON.parse(e.data);
+    const toolEl = document.getElementById(`tool-${agentId}`);
+    if (!toolEl) return;
+
+    const statusEl = toolEl.querySelector('.tool-call-status');
+    if (statusEl) {
+      statusEl.textContent = `${citations.length} sources`;
+      statusEl.classList.remove('loading');
+      statusEl.classList.add('done');
+    }
+
+    const citationLinks = (citations || []).map((c, i) =>
+      `<a href="${esc(c)}" target="_blank" rel="noopener">[${i + 1}] ${esc(c)}</a>`
+    ).join('');
+
+    const bodyEl = toolEl.querySelector('.tool-call-body');
+    if (bodyEl) {
+      bodyEl.innerHTML = `
+        <details class="tool-call-details" open>
+          <summary>Query & Results</summary>
+          <div class="tool-call-query">${esc(query)}</div>
+          <div class="tool-call-result">${renderMarkdown(content)}</div>
+          ${citationLinks ? `<div class="tool-call-citations">${citationLinks}</div>` : ''}
+        </details>`;
+    }
+
+    scrollToBottom();
+    const excerpt = content.length > 100 ? content.slice(0, 97) + '...' : content;
+    GameBridge.showBubble(agentId, '📚 ' + excerpt, color);
   });
 
   eventSource.addEventListener('reasoning', e => {
@@ -290,7 +352,7 @@ function connectSSE() {
     document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
     const saEl = document.getElementById(`sa-${agentId}`);
     if (saEl) saEl.classList.add('speaking');
-    showTyping(true, agentName, false);
+    showTyping(true, agentName, 'speaking');
     GameBridge.setSpeaking(agentId);
     agentSpeakCounts[agentId] = (agentSpeakCounts[agentId] || 0) + 1;
     renderHudAgents(agentId);
@@ -391,12 +453,14 @@ function appendCompleteMessage(msg) {
   scrollToBottom();
 }
 
-function showTyping(show, name, isThinking) {
+function showTyping(show, name, state) {
   if (show) {
     typingName.textContent = name || 'Agent';
     const label = typingIndicator.querySelector('#typing-label');
     if (label) {
-      label.textContent = isThinking ? 'is reasoning privately…' : 'is speaking…';
+      if (state === 'searching') label.textContent = 'is searching the web…';
+      else if (state === 'thinking') label.textContent = 'is reasoning privately…';
+      else label.textContent = 'is speaking…';
     }
     typingIndicator.classList.remove('hidden');
   } else {
@@ -515,9 +579,20 @@ function exportMarkdown() {
     });
 }
 
+function appendDownloadBar(afterEl) {
+  const bar = document.createElement('div');
+  bar.className = 'download-bar';
+  bar.innerHTML = `
+    <span class="download-bar-label">🏁 Discussion complete</span>
+    <button class="btn download-bar-btn" onclick="exportMarkdown()">📥 Download Report (.md)</button>
+    <button class="btn download-bar-btn secondary" onclick="newDiscussion()">🎙️ New Discussion</button>`;
+  afterEl.after(bar);
+}
+
 function newDiscussion() {
   sessionId = null; agents = []; plan = null;
   streamingMessages = {}; lastSummaryContent = '';
+  pendingReasoning = {};
   if (eventSource) eventSource.close();
   messagesEl.innerHTML = '';
   topicInput.value = ''; prefInput.value = '';
@@ -580,10 +655,10 @@ topicInput.addEventListener('keydown', e => { if (e.key === 'Enter' && e.metaKey
 // ═══ Preview Mode ════════════════════════════════════════════════════════
 if (new URLSearchParams(location.search).has('preview')) {
   const mockAgents = [
-    { id: 'a1', name: 'Alice', role: 'Economist', perspective: 'Market dynamics', speakingStyle: 'analytical', color: '#FF6B6B', emoji: '📊' },
-    { id: 'a2', name: 'Bob', role: 'Technologist', perspective: 'Engineering lens', speakingStyle: 'technical', color: '#6C63FF', emoji: '💻' },
-    { id: 'a3', name: 'Carol', role: 'Ethicist', perspective: 'Moral implications', speakingStyle: 'thoughtful', color: '#4ECDC4', emoji: '⚖️' },
-    { id: 'a4', name: 'Dave', role: 'Skeptic', perspective: 'Devil\'s advocate', speakingStyle: 'challenging', color: '#FFD93D', emoji: '🤔' },
+    { id: 'a1', name: 'Alice', gender: 'female', role: 'Economist', perspective: 'Market dynamics', speakingStyle: 'analytical', color: '#FF6B6B', emoji: '📊' },
+    { id: 'a2', name: 'Bob', gender: 'male', role: 'Technologist', perspective: 'Engineering lens', speakingStyle: 'technical', color: '#6C63FF', emoji: '💻' },
+    { id: 'a3', name: 'Carol', gender: 'female', role: 'Ethicist', perspective: 'Moral implications', speakingStyle: 'thoughtful', color: '#4ECDC4', emoji: '⚖️' },
+    { id: 'a4', name: 'Dave', gender: 'male', role: 'Skeptic', perspective: 'Devil\'s advocate', speakingStyle: 'challenging', color: '#FFD93D', emoji: '🤔' },
   ];
   agents = mockAgents;
   plan = {
@@ -643,14 +718,14 @@ if (new URLSearchParams(location.search).has('preview')) {
     const saEl = document.getElementById(`sa-${line.agentId}`);
     document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
     if (saEl) saEl.classList.add('thinking');
-    showTyping(true, line.agentName, true);
+    showTyping(true, line.agentName, 'thinking');
     GameBridge.setThinking(line.agentId);
     renderHudAgents(null);
 
     setTimeout(() => {
       document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
       if (saEl) saEl.classList.add('speaking');
-      showTyping(true, line.agentName, false);
+      showTyping(true, line.agentName, 'speaking');
       GameBridge.setSpeaking(line.agentId);
       agentSpeakCounts[line.agentId] = (agentSpeakCounts[line.agentId] || 0) + 1;
       renderHudAgents(line.agentId);

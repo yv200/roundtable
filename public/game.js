@@ -5,6 +5,10 @@ const GAME_H = 540;
 const TABLE_CX = 500;
 const TABLE_CY = 340;
 
+// Sprite indices grouped by gender (visual appearance of pre-rendered sprites)
+const FEMALE_SPRITES = [0, 2, 4];  // agent-0: red suit, agent-2: purple suit, agent-4: orange top
+const MALE_SPRITES = [1, 3, 5];    // agent-1: blue hoodie, agent-3: green vest, agent-5: teal shirt
+
 const CHAR_H = 65;
 const CHAR_STAND_H = 82;
 const HOST_H = 82;
@@ -198,9 +202,15 @@ class RoundtableScene extends Phaser.Scene {
     });
     this.characters = {};
 
+    let femaleIdx = 0;
+    let maleIdx = 0;
+
     agents.forEach((agent, i) => {
       const seat = SEAT_POSITIONS[i % SEAT_POSITIONS.length];
-      const spriteIdx = i % 6;
+      const isFemale = agent.gender === 'female';
+      const spriteIdx = isFemale
+        ? FEMALE_SPRITES[(femaleIdx++) % FEMALE_SPRITES.length]
+        : MALE_SPRITES[(maleIdx++) % MALE_SPRITES.length];
       const isBehind = seat.side === 'back';
 
       // Use pre-rendered sitting sprite

@@ -8,6 +8,7 @@ import type { Session, Message, MessageRole, SubTopic } from './types.js';
 import { createPlan, introduceSubTopic, reviewSubTopic, synthesizeFinal, checkConflicts } from './planner.js';
 import { critique } from './critic.js';
 import { getAgentReasoning, getAgentResponse, getAgentCritiqueReasoning, getAgentCritiqueResponse } from './agents.js';
+import { agentResearch, searchEnabled } from './research.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -235,10 +236,26 @@ async function runDiscussion(session: Session) {
           }
         }
 
+        // Step 0: Web research (if search is configured)
+        let research = null;
+        if (searchEnabled()) {
+          console.log(`[${agent.name}] researching...`);
+          broadcast(session, 'researching', { agentId: agent.id, agentName: agent.name });
+          research = await agentResearch(agent, st, session.topic);
+          if (research) {
+            console.log(`[${agent.name}] research done (${research.citations.length} citations)`);
+            broadcast(session, 'research', {
+              agentId: agent.id, agentName: agent.name,
+              query: research.query, content: research.content,
+              citations: research.citations, color: agent.color,
+            });
+          }
+        }
+
         // Step 1: Private reasoning (not visible to other agents)
         console.log(`[${agent.name}] reasoning start...`);
         broadcast(session, 'thinking', { agentId: agent.id, agentName: agent.name });
-        const reasoning = await getAgentReasoning(agent, session, st, prompt);
+        const reasoning = await getAgentReasoning(agent, session, st, prompt, research);
         console.log(`[${agent.name}] reasoning done (${reasoning.length} chars)`);
         broadcast(session, 'reasoning', {
           agentId: agent.id, agentName: agent.name,
@@ -254,7 +271,7 @@ async function runDiscussion(session: Session) {
         console.log(`[${agent.name}] speaking start...`);
         broadcast(session, 'speaking', { agentId: agent.id, agentName: agent.name });
         await streamMsg(session, 'agent', agent.name,
-          getAgentResponse(agent, session, st, prompt, reasoning), st.id,
+          getAgentResponse(agent, session, st, prompt, reasoning, research), st.id,
           { color: agent.color, emoji: agent.emoji, agentId: agent.id });
         await sleep(300);
       }

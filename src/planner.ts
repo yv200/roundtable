@@ -29,6 +29,7 @@ Respond in strict JSON (no markdown fences):
   "agents": [
     {
       "name": "Display Name (short, memorable)",
+      "gender": "male or female — MUST match the name and identity of the character",
       "role": "One-line role title",
       "perspective": "What unique angle this agent brings (1-2 sentences)",
       "speakingStyle": "How this agent communicates: tone, structure, verbal habits. Be specific. e.g. 'Blunt and numbers-obsessed. Opens with data, distrusts abstract claims. Often says things like 没有数据支撑的观点就是空谈. Uses short punchy sentences.' or 'Storyteller who thinks in analogies. Tends to say 这让我想起一个案例... Warm but will quietly dismantle weak arguments with pointed questions.'"
@@ -59,6 +60,7 @@ The sub-topics should progress from foundational understanding → analysis → 
   const agents: AgentConfig[] = parsed.agents.map((a: any, i: number) => ({
     id: `agent-${i}`,
     name: a.name,
+    gender: a.gender === 'female' ? 'female' : 'male' as const,
     role: a.role,
     perspective: a.perspective,
     speakingStyle: a.speakingStyle || '',
