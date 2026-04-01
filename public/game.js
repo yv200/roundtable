@@ -119,15 +119,15 @@ class RoundtableScene extends Phaser.Scene {
     // Blackboard
     this.add.image(BB_POS.x + BB_W*3/2, BB_POS.y + BB_H*3/2, 'blackboard').setScale(3);
 
-    this.topicText = this.add.text(BB_POS.x + BB_W*3/2, BB_POS.y + 16, '', {
-      fontFamily: 'monospace', fontSize: '12px', color: '#667766',
-      align: 'center', wordWrap: { width: BB_W*3 - 40 },
+    this.topicText = this.add.text(BB_POS.x + BB_W*3/2, BB_POS.y + 14, '', {
+      fontFamily: 'monospace', fontSize: '9px', color: '#667766',
+      align: 'center', wordWrap: { width: BB_W*3 - 30 },
     }).setOrigin(0.5, 0);
 
     this.blackboardText = this.add.text(
-      BB_POS.x + BB_W*3/2, BB_POS.y + BB_H*3/2 + 10, '',
-      { fontFamily: 'monospace', fontSize: '15px', color: '#ccddcc', fontStyle: 'bold',
-        align: 'center', wordWrap: { width: BB_W*3 - 36 } }
+      BB_POS.x + BB_W*3/2, BB_POS.y + BB_H*3/2 + 8, '',
+      { fontFamily: 'monospace', fontSize: '11px', color: '#ccddcc', fontStyle: 'bold',
+        align: 'center', wordWrap: { width: BB_W*3 - 24 } }
     ).setOrigin(0.5, 0.5);
 
     // Table (pre-rendered sprite, scale to ~160px wide)
@@ -225,22 +225,70 @@ class RoundtableScene extends Phaser.Scene {
     this._startAgentIdleAnimations();
   }
 
+  async enterAgentsSequentially(agents) {
+    // First set up all agents (creates sprites)
+    this.setupAgents(agents);
+
+    // Hide all agent sprites initially
+    Object.values(this.characters).forEach(char => {
+      char.sprite.setAlpha(0);
+      char.sprite.setY(GAME_H + 50);
+      char.nameText.setAlpha(0);
+    });
+
+    // Stop idle animations while entering
+    this.idleTweens.forEach(t => t.remove());
+    this.idleTweens = [];
+
+    // Enter one by one
+    const entries = Object.entries(this.characters);
+    for (let i = 0; i < entries.length; i++) {
+      const [id, char] = entries[i];
+      char.sprite.setTexture(`agent-stand-${char.spriteIdx}`);
+      this._scaleToHeight(char.sprite, CHAR_STAND_H);
+      char.sprite.setAlpha(1);
+
+      await new Promise(resolve => {
+        this.tweens.add({
+          targets: char.sprite,
+          y: char.originalY,
+          duration: 600,
+          ease: 'Power2.easeOut',
+          onComplete: () => {
+            // Sit down
+            char.sprite.setTexture(`agent-sit-${char.spriteIdx}`);
+            this._scaleToHeight(char.sprite, CHAR_H);
+            char.sprite.setY(char.originalY);
+            char.nameText.setAlpha(1);
+            resolve();
+          },
+        });
+      });
+
+      await new Promise(r => setTimeout(r, 350));
+    }
+
+    this._startAgentIdleAnimations();
+  }
+
   setTopic(title) {
     if (!this.topicText) return;
-    this.topicText.setWordWrapWidth(BB_W * 3 - 40);
-    this.topicText.setText(title);
+    const maxLen = 60;
+    const display = title.length > maxLen ? title.slice(0, maxLen - 1) + '…' : title;
+    this.topicText.setWordWrapWidth(BB_W * 3 - 30);
+    this.topicText.setText(display);
   }
 
   setSubtopic(title) {
     if (!this.blackboardText) return;
     const wrapW = BB_W * 3 - 36;
     const maxH = BB_H * 3 - 55;
-    let size = 15;
+    let size = 11;
     this.blackboardText.setWordWrapWidth(wrapW);
     this.blackboardText.setFontSize(size + 'px');
     this.blackboardText.setText(title);
 
-    while (this.blackboardText.height > maxH && size > 9) {
+    while (this.blackboardText.height > maxH && size > 7) {
       size--;
       this.blackboardText.setFontSize(size + 'px');
       this.blackboardText.setWordWrapWidth(wrapW);
@@ -423,6 +471,15 @@ const GameBridge = {
     const scene = this.getScene();
     if (scene && scene.scene.isActive()) scene.setupAgents(agents);
     else setTimeout(() => this.setupAgents(agents), 200);
+  },
+
+  async enterAgents(agents) {
+    const scene = this.getScene();
+    if (!scene || !scene.scene.isActive()) {
+      await new Promise(r => setTimeout(r, 300));
+      return this.enterAgents(agents);
+    }
+    return scene.enterAgentsSequentially(agents);
   },
 
   setTopic(title) {

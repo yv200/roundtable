@@ -200,9 +200,9 @@ async function runDiscussion(session: Session) {
     // Planner introduces
     try {
       const intro = await introduceSubTopic(st, session);
-      addMsg(session, 'planner', '📐 Planner', intro, st.id, { color: '#FFB347' });
+      addMsg(session, 'planner', '📐 Host', intro, st.id, { color: '#FFB347' });
     } catch (err: any) {
-      addMsg(session, 'planner', '📐 Planner', `Introduction: ${st.goal}`, st.id, { color: '#FFB347' });
+      addMsg(session, 'planner', '📐 Host', `Introduction: ${st.goal}`, st.id, { color: '#FFB347' });
     }
 
     // ── Discussion + Critique loop ──
@@ -330,20 +330,20 @@ async function runDiscussion(session: Session) {
 
       if (review.complete) {
         st.status = 'completed';
-        addMsg(session, 'planner', '📐 Planner',
+        addMsg(session, 'planner', '📐 Host',
           `✅ **Sub-topic completed: ${st.title}**\n\n**Summary:** ${review.summary}`,
           st.id, { color: '#FFB347' });
       } else {
         // Not fully complete but we move on (with note)
         st.status = 'completed';
-        addMsg(session, 'planner', '📐 Planner',
+        addMsg(session, 'planner', '📐 Host',
           `📝 **Sub-topic wrapped: ${st.title}**\n\n**Summary:** ${review.summary}\n\n*Note: ${review.feedback}*`,
           st.id, { color: '#FFB347' });
       }
     } catch (err: any) {
       st.status = 'completed';
       st.summary = `Discussion on "${st.title}" completed.`;
-      addMsg(session, 'planner', '📐 Planner',
+      addMsg(session, 'planner', '📐 Host',
         `📝 **Sub-topic wrapped: ${st.title}**`, st.id, { color: '#FFB347' });
     }
 
@@ -386,7 +386,7 @@ async function runDiscussion(session: Session) {
     if (conflictResult.hasConflicts && conflictResult.conflicts.length > 0) {
       plan.conflicts = conflictResult.conflicts;
       const conflictText = conflictResult.conflicts.map((c, i) => `${i + 1}. ${c}`).join('\n');
-      addMsg(session, 'planner', '📐 Planner',
+      addMsg(session, 'planner', '📐 Host',
         `⚠️ **Conflicts detected in synthesis:**\n${conflictText}\n\n*These should be addressed in future iterations.*`,
         undefined, { color: '#FFB347' });
     }

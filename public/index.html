@@ -11,50 +11,8 @@
 <body>
   <div id="app">
 
-    <!-- ═══ Setup Phase ═══ -->
-    <section id="setup" class="phase active">
-      <div class="setup-container">
-        <div class="logo">🎙️</div>
-        <h1>Roundtable <span class="version">v2</span></h1>
-        <p class="subtitle">Structured Multi-Agent Research Discussion</p>
-
-        <div class="setup-form">
-          <label for="topic-input">Research Topic</label>
-          <textarea id="topic-input" rows="3"
-            placeholder="What should the agents research and discuss?"></textarea>
-
-          <label for="pref-input">
-            Panel Preferences <span class="optional">(optional)</span>
-          </label>
-          <textarea id="pref-input" rows="2"
-            placeholder='e.g. "Include an economist, a technologist, and a skeptic"'></textarea>
-
-          <button id="generate-btn" class="btn primary">
-            <span class="btn-text">Generate Plan</span>
-            <span class="btn-loading hidden">⏳ Planning...</span>
-          </button>
-        </div>
-
-        <!-- Plan preview -->
-        <div id="plan-panel" class="hidden">
-          <h2>Discussion Plan</h2>
-
-          <h3>📐 Sub-topics</h3>
-          <div id="plan-subtopics"></div>
-
-          <h3>👥 Discussion Panel</h3>
-          <div id="agent-cards"></div>
-
-          <div class="panel-actions">
-            <button id="regenerate-btn" class="btn secondary">🔄 Regenerate</button>
-            <button id="start-btn" class="btn primary">▶ Start Research</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ═══ Discussion Phase ═══ -->
-    <section id="discussion" class="phase">
+    <!-- ═══ Discussion Phase (always visible) ═══ -->
+    <section id="discussion" class="phase active">
       <div class="discussion-layout game-view">
         <aside id="sidebar">
           <div class="sidebar-header">
@@ -81,7 +39,37 @@
               <div class="bubble-text"></div>
               <div class="bubble-tail"></div>
             </div>
+
           </div>
+
+  <!-- Setup overlay — fixed to window center -->
+  <div id="setup-overlay">
+    <div class="setup-overlay-inner">
+      <div class="logo">🎙️</div>
+      <h2>Roundtable <span class="version">v2</span></h2>
+      <div class="setup-form">
+        <textarea id="topic-input" rows="3"
+          placeholder="What should the agents research and discuss?"></textarea>
+        <textarea id="pref-input" rows="2"
+          placeholder='Panel preferences (optional, e.g. "Include an economist and a skeptic")'></textarea>
+        <button id="generate-btn" class="btn primary">
+          <span class="btn-text">Generate Plan</span>
+          <span class="btn-loading hidden">⏳ Host is planning...</span>
+        </button>
+      </div>
+
+      <div id="plan-panel" class="hidden">
+        <h3>📐 Sub-topics</h3>
+        <div id="plan-subtopics"></div>
+        <h3>👥 Discussion Panel</h3>
+        <div id="agent-cards"></div>
+        <div class="panel-actions">
+          <button id="regenerate-btn" class="btn secondary">🔄 Regenerate</button>
+          <button id="start-btn" class="btn primary">▶ Start Discussion</button>
+        </div>
+      </div>
+    </div>
+  </div>
           <div id="hud-bar">
             <div id="hud-progress"></div>
             <div id="hud-agents"></div>
@@ -99,7 +87,6 @@
       </div>
 
       <div id="controls">
-        <button id="view-toggle-btn" class="btn" title="Switch view">🎮 Game View</button>
         <button id="pause-btn" class="btn">⏸ Pause</button>
         <div id="inject-container" class="hidden">
           <input id="inject-input" type="text" placeholder="Add your thoughts…" />

@@ -37,7 +37,6 @@ const conflictsSection = $('#conflicts-section');
 const conflictsContent = $('#conflicts-content');
 const exportBtn = $('#export-btn');
 const newBtn = $('#new-btn');
-const viewToggleBtn = $('#view-toggle-btn');
 const discussionLayout = $('.discussion-layout');
 const hudProgress = $('#hud-progress');
 const hudAgents = $('#hud-agents');
@@ -46,9 +45,22 @@ let agentSpeakCounts = {};
 let pendingReasoning = {};
 
 // ═══ Phase ═══════════════════════════════════════════════════════════════
+const setupOverlay = $('#setup-overlay');
+
 function showPhase(name) {
   Object.values(phases).forEach(p => p.classList.remove('active'));
   phases[name].classList.add('active');
+}
+
+// Init game immediately on load
+function initGameOnLoad() {
+  currentView = 'game';
+  const layout = $('.discussion-layout');
+  if (layout) {
+    layout.classList.remove('classic-view');
+    layout.classList.add('game-view');
+  }
+  GameBridge.init('game-container');
 }
 
 // ═══ API ═════════════════════════════════════════════════════════════════
@@ -72,6 +84,9 @@ async function generatePlan() {
   generateBtn.querySelector('.btn-text').classList.add('hidden');
   generateBtn.querySelector('.btn-loading').classList.remove('hidden');
 
+  // Host thinking animation while planning
+  GameBridge.setSpeaking('planner');
+
   try {
     const data = await api('POST', '/session', {
       topic,
@@ -88,6 +103,7 @@ async function generatePlan() {
     generateBtn.disabled = false;
     generateBtn.querySelector('.btn-text').classList.remove('hidden');
     generateBtn.querySelector('.btn-loading').classList.add('hidden');
+    GameBridge.stopAll();
   }
 }
 
@@ -117,23 +133,23 @@ async function startDiscussion() {
   topicDisplay.textContent = topicInput.value.trim();
   renderSidebarProgress();
   renderSidebarAgents();
-  showPhase('discussion');
 
-  currentView = 'game';
-  discussionLayout.classList.remove('classic-view');
-  discussionLayout.classList.add('game-view');
-  viewToggleBtn.textContent = '📋 Classic View';
+  // Hide setup overlay with fade
+  if (setupOverlay) setupOverlay.classList.add('hidden');
 
-  GameBridge.init('game-container');
-  GameBridge.setupAgents(agents);
+  // Host writes topic on blackboard
   GameBridge.setTopic(topicInput.value.trim());
+  if (plan?.subTopics?.[0]) {
+    GameBridge.setSubtopic(plan.subTopics[0].title);
+  }
+
+  // Agents enter one by one
+  await GameBridge.enterAgents(agents);
+
   agentSpeakCounts = {};
   renderHudProgress();
   renderHudAgents(null);
   hudLog.innerHTML = '';
-  if (plan?.subTopics?.[0]) {
-    GameBridge.setSubtopic(plan.subTopics[0].title);
-  }
 
   connectSSE();
   try { await api('POST', `/session/${sessionId}/start`); }
@@ -164,7 +180,7 @@ function renderSidebarAgents() {
       <span>🔍</span><span style="color: #4ECDC4">Critic</span>
     </div>`,
     `<div class="sidebar-agent" id="sa-planner" style="--agent-color: #FFB347">
-      <span>📐</span><span style="color: #FFB347">Planner</span>
+      <span>📐</span><span style="color: #FFB347">Host</span>
     </div>`,
   ].join('');
 }
@@ -388,9 +404,45 @@ function showTyping(show, name, isThinking) {
   }
 }
 
+let autoFollow = true;
+
 function scrollToBottom() {
+  if (!autoFollow) return;
   requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; });
 }
+
+function updateFollowBtn() {
+  let btn = document.getElementById('follow-btn');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'follow-btn';
+    btn.className = 'btn follow-btn';
+    btn.textContent = '↓ Follow';
+    btn.addEventListener('click', () => {
+      autoFollow = true;
+      btn.classList.add('hidden');
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+    messagesEl.parentElement.appendChild(btn);
+  }
+  if (autoFollow) {
+    btn.classList.add('hidden');
+  } else {
+    btn.classList.remove('hidden');
+  }
+}
+
+// Detect user scroll
+messagesEl.addEventListener('scroll', () => {
+  const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
+  if (atBottom && !autoFollow) {
+    autoFollow = true;
+    updateFollowBtn();
+  } else if (!atBottom && autoFollow) {
+    autoFollow = false;
+    updateFollowBtn();
+  }
+});
 
 function renderMarkdown(text) {
   if (typeof marked !== 'undefined') return marked.parse(text || '', { breaks: true });
@@ -444,7 +496,7 @@ function exportMarkdown() {
           md += `\n${m.content}\n\n`;
           currentSt = m.content;
         } else if (m.type === 'planner') {
-          md += `> **📐 Planner:** ${m.content}\n\n`;
+          md += `> **📐 Host:** ${m.content}\n\n`;
         } else if (m.type === 'critic') {
           md += `> **🔍 Critic:** ${m.content}\n\n`;
         } else if (m.type === 'user') {
@@ -489,7 +541,7 @@ function renderHudAgents(speakingId) {
   const allAgents = [
     ...agents.map(a => ({ id: a.id, emoji: a.emoji, name: a.name, color: a.color })),
     { id: 'critic', emoji: '🔍', name: 'Critic', color: '#4ECDC4' },
-    { id: 'planner', emoji: '📐', name: 'Planner', color: '#FFB347' },
+    { id: 'planner', emoji: '📐', name: 'Host', color: '#FFB347' },
   ];
   hudAgents.innerHTML = allAgents.map(a => {
     const count = agentSpeakCounts[a.id] || 0;
@@ -523,25 +575,7 @@ exportBtn.addEventListener('click', exportMarkdown);
 newBtn.addEventListener('click', newDiscussion);
 topicInput.addEventListener('keydown', e => { if (e.key === 'Enter' && e.metaKey) { e.preventDefault(); generatePlan(); } });
 
-function toggleView() {
-  if (currentView === 'game') {
-    currentView = 'classic';
-    discussionLayout.classList.remove('game-view');
-    discussionLayout.classList.add('classic-view');
-    viewToggleBtn.textContent = '🎮 Game View';
-  } else {
-    currentView = 'game';
-    discussionLayout.classList.remove('classic-view');
-    discussionLayout.classList.add('game-view');
-    viewToggleBtn.textContent = '📋 Classic View';
-    if (!GameBridge.initialized) {
-      GameBridge.init('game-container');
-      GameBridge.setupAgents(agents);
-      GameBridge.setTopic(topicDisplay.textContent);
-    }
-  }
-}
-viewToggleBtn.addEventListener('click', toggleView);
+// View toggle removed — game view only
 
 // ═══ Preview Mode ════════════════════════════════════════════════════════
 if (new URLSearchParams(location.search).has('preview')) {
@@ -564,17 +598,16 @@ if (new URLSearchParams(location.search).has('preview')) {
   topicDisplay.textContent = 'The Future of AI — Economic, Ethical & Policy Perspectives';
   renderSidebarProgress();
   renderSidebarAgents();
-  showPhase('discussion');
 
-  currentView = 'game';
-  discussionLayout.classList.remove('classic-view');
-  discussionLayout.classList.add('game-view');
-  viewToggleBtn.textContent = '📋 Classic View';
+  // Hide setup overlay for preview
+  if (setupOverlay) setupOverlay.classList.add('hidden');
 
-  GameBridge.init('game-container');
-  GameBridge.setupAgents(mockAgents);
-  GameBridge.setTopic('The Future of AI');
-  GameBridge.setSubtopic('Economic Impact of AI Automation on Global Labor Markets and Workforce Displacement Patterns');
+  // Game already initialized by initGameOnLoad, just setup agents
+  setTimeout(() => {
+    GameBridge.setupAgents(mockAgents);
+    GameBridge.setTopic('The Future of AI');
+    GameBridge.setSubtopic('Economic Impact of AI Automation');
+  }, 500);
   agentSpeakCounts = {};
   renderHudProgress();
   renderHudAgents(null);
@@ -657,3 +690,6 @@ if (new URLSearchParams(location.search).has('preview')) {
     setTimeout(() => simulateStream(0), 500);
   }, 1000);
 }
+
+// ═══ Init game on page load ══════════════════════════════════════════════
+initGameOnLoad();
