@@ -2,23 +2,19 @@
 let sessionId = null;
 let agents = [];
 let plan = null;
+let phases = [];
 let eventSource = null;
 let streamingMessages = {};
 let lastSummaryContent = '';
 let currentView = 'game';
+let currentMode = 'discussion';
+let modeManifests = [];
+let godViewEnabled = true;
 
 // ═══ DOM refs ════════════════════════════════════════════════════════════
 const $ = s => document.querySelector(s);
-const phases = { setup: $('#setup'), discussion: $('#discussion'), complete: $('#complete') };
+const phaseEls = { discussion: $('#discussion'), complete: $('#complete') };
 
-const topicInput = $('#topic-input');
-const prefInput = $('#pref-input');
-const generateBtn = $('#generate-btn');
-const regenerateBtn = $('#regenerate-btn');
-const planPanel = $('#plan-panel');
-const planSubtopics = $('#plan-subtopics');
-const agentCards = $('#agent-cards');
-const startBtn = $('#start-btn');
 const topicDisplay = $('#topic-display');
 const sidebarProgress = $('#sidebar-progress');
 const sidebarAgents = $('#sidebar-agents');
@@ -37,29 +33,37 @@ const conflictsSection = $('#conflicts-section');
 const conflictsContent = $('#conflicts-content');
 const exportBtn = $('#export-btn');
 const newBtn = $('#new-btn');
-const discussionLayout = $('.discussion-layout');
 const hudProgress = $('#hud-progress');
 const hudAgents = $('#hud-agents');
 const hudLog = $('#hud-log');
+const phaseIndicator = $('#phase-indicator');
+const godViewToggle = $('#god-view-toggle');
+const godViewCheckbox = $('#god-view-checkbox');
+
+const modeSelector = $('#mode-selector');
+const configForm = $('#config-form');
+const generateBtn = $('#generate-btn');
+const regenerateBtn = $('#regenerate-btn');
+const planPanel = $('#plan-panel');
+const planPanelTitle = $('#plan-panel-title');
+const planSubtopics = $('#plan-subtopics');
+const agentCards = $('#agent-cards');
+const startBtn = $('#start-btn');
+const setupOverlay = $('#setup-overlay');
+
 let agentSpeakCounts = {};
 let pendingReasoning = {};
 
 // ═══ Phase ═══════════════════════════════════════════════════════════════
-const setupOverlay = $('#setup-overlay');
-
 function showPhase(name) {
-  Object.values(phases).forEach(p => p.classList.remove('active'));
-  phases[name].classList.add('active');
+  Object.values(phaseEls).forEach(p => p.classList.remove('active'));
+  phaseEls[name]?.classList.add('active');
 }
 
-// Init game immediately on load
 function initGameOnLoad() {
   currentView = 'game';
   const layout = $('.discussion-layout');
-  if (layout) {
-    layout.classList.remove('classic-view');
-    layout.classList.add('game-view');
-  }
+  if (layout) { layout.classList.remove('classic-view'); layout.classList.add('game-view'); }
   GameBridge.init('game-container');
 }
 
@@ -75,30 +79,131 @@ async function api(method, path, body) {
   return res.json();
 }
 
-// ═══ Generate plan ═══════════════════════════════════════════════════════
+// ═══ Mode selection ══════════════════════════════════════════════════════
+async function loadModes() {
+  try {
+    modeManifests = await api('GET', '/modes');
+  } catch {
+    modeManifests = [
+      { id: 'discussion', name: 'Discussion', icon: '🎙️', configSchema: [{ key: 'topic', type: 'text', label: 'Topic', required: true, hint: 'What should the agents research and discuss?' }, { key: 'agentPreference', type: 'text', label: 'Panel Preferences', required: false, hint: 'Optional preferences' }] },
+      { id: 'werewolf', name: 'Werewolf', icon: '🐺', configSchema: [{ key: 'preset', type: 'select', label: 'Preset', required: true, default: 'standard', options: [{ value: 'simple', label: 'Simple (6)' }, { value: 'standard', label: 'Standard (8)' }, { value: 'chaos', label: 'Chaos (10)' }] }, { key: 'theme', type: 'text', label: 'Theme', required: false, default: 'Medieval village' }] },
+    ];
+  }
+  renderModeSelector();
+  selectMode(currentMode);
+}
+
+function renderModeSelector() {
+  modeSelector.innerHTML = modeManifests.map(m => `
+    <div class="mode-card ${m.id === currentMode ? 'selected' : ''}" data-mode="${m.id}">
+      <span class="mode-icon">${m.icon}</span>
+      <div class="mode-info">
+        <div class="mode-name">${esc(m.name)}</div>
+        <div class="mode-desc">${esc(m.description || '')}</div>
+      </div>
+    </div>`).join('');
+
+  modeSelector.querySelectorAll('.mode-card').forEach(card => {
+    card.addEventListener('click', () => selectMode(card.dataset.mode));
+  });
+}
+
+function selectMode(modeId) {
+  currentMode = modeId;
+  modeSelector.querySelectorAll('.mode-card').forEach(c =>
+    c.classList.toggle('selected', c.dataset.mode === modeId));
+
+  const manifest = modeManifests.find(m => m.id === modeId);
+  if (manifest) renderConfigForm(manifest.configSchema);
+
+  // Update button text
+  const btnText = generateBtn.querySelector('.btn-text');
+  if (modeId === 'discussion') {
+    btnText.textContent = 'Generate Plan';
+  } else {
+    btnText.textContent = 'Create Game';
+  }
+
+  planPanel.classList.add('hidden');
+}
+
+function renderConfigForm(schema) {
+  configForm.innerHTML = schema.map(field => {
+    let input = '';
+    switch (field.type) {
+      case 'text':
+        const isLong = field.key === 'topic';
+        input = isLong
+          ? `<textarea id="cfg-${field.key}" rows="3" placeholder="${esc(field.hint || '')}">${field.default || ''}</textarea>`
+          : `<input type="text" id="cfg-${field.key}" value="${field.default || ''}" placeholder="${esc(field.hint || '')}">`;
+        break;
+      case 'number':
+        input = `<input type="number" id="cfg-${field.key}" value="${field.default || ''}" min="${field.min || ''}" max="${field.max || ''}">`;
+        break;
+      case 'select':
+        input = `<select id="cfg-${field.key}">${(field.options || []).map(o =>
+          `<option value="${o.value}" ${o.value === field.default ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+        break;
+      case 'toggle':
+        input = `<label class="toggle-label"><input type="checkbox" id="cfg-${field.key}" ${field.default ? 'checked' : ''} /> ${esc(field.label)}</label>`;
+        return `<div class="config-field">${input}${field.hint ? `<div class="field-hint">${esc(field.hint)}</div>` : ''}</div>`;
+      case 'range':
+        input = `<input type="range" id="cfg-${field.key}" min="${field.min || 0}" max="${field.max || 100}" value="${field.default || 50}"><span id="cfg-${field.key}-val">${field.default || 50}</span>`;
+        break;
+    }
+    return `<div class="config-field">
+      <label for="cfg-${field.key}">${esc(field.label)}${field.required ? '' : ' <span class="optional">(optional)</span>'}</label>
+      ${input}
+      ${field.hint && field.type !== 'toggle' ? `<div class="field-hint">${esc(field.hint)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function getConfigValues() {
+  const manifest = modeManifests.find(m => m.id === currentMode);
+  if (!manifest) return {};
+  const config = {};
+  for (const field of manifest.configSchema) {
+    const el = document.getElementById(`cfg-${field.key}`);
+    if (!el) continue;
+    if (field.type === 'toggle') config[field.key] = el.checked;
+    else if (field.type === 'number' || field.type === 'range') config[field.key] = Number(el.value);
+    else config[field.key] = el.value;
+  }
+  return config;
+}
+
+// ═══ Generate / Create ═══════════════════════════════════════════════════
 async function generatePlan() {
-  const topic = topicInput.value.trim();
-  if (!topic) { topicInput.focus(); return; }
+  const config = getConfigValues();
+  if (currentMode === 'discussion' && !config.topic?.trim()) {
+    document.getElementById('cfg-topic')?.focus();
+    return;
+  }
 
   generateBtn.disabled = true;
   generateBtn.querySelector('.btn-text').classList.add('hidden');
   generateBtn.querySelector('.btn-loading').classList.remove('hidden');
-
-  // Host thinking animation while planning
   GameBridge.setSpeaking('planner');
 
   try {
-    const data = await api('POST', '/session', {
-      topic,
-      agentPreference: prefInput.value.trim() || undefined,
-    });
+    let body;
+    if (currentMode === 'discussion') {
+      // Backward compat
+      body = { topic: config.topic, agentPreference: config.agentPreference };
+    } else {
+      body = { mode: currentMode, config };
+    }
+
+    const data = await api('POST', '/session', body);
     sessionId = data.id;
     agents = data.agents;
-    plan = data.plan;
+    plan = data.plan || null;
+    phases = data.phases || [];
     renderPlanPreview();
     planPanel.classList.remove('hidden');
   } catch (err) {
-    alert('Failed to generate plan: ' + err.message);
+    alert('Failed to generate: ' + err.message);
   } finally {
     generateBtn.disabled = false;
     generateBtn.querySelector('.btn-text').classList.remove('hidden');
@@ -108,12 +213,20 @@ async function generatePlan() {
 }
 
 function renderPlanPreview() {
-  planSubtopics.innerHTML = plan.subTopics.map((st, i) => `
-    <div class="plan-st">
-      <div class="plan-st-title">${i + 1}. ${esc(st.title)}</div>
-      <div class="plan-st-goal">${esc(st.goal)}</div>
-    </div>
-  `).join('');
+  if (currentMode === 'discussion' && plan) {
+    planPanelTitle.textContent = '📐 Sub-topics';
+    planSubtopics.innerHTML = plan.subTopics.map((st, i) => `
+      <div class="plan-st"><div class="plan-st-title">${i + 1}. ${esc(st.title)}</div>
+        <div class="plan-st-goal">${esc(st.goal)}</div></div>`).join('');
+  } else if (currentMode === 'werewolf') {
+    planPanelTitle.textContent = '🐺 Game Setup';
+    planSubtopics.innerHTML = `<div class="plan-st"><div class="plan-st-title">🎭 ${agents.length} Players</div>
+      <div class="plan-st-goal">Roles will be assigned secretly when the game starts.</div></div>`;
+  } else {
+    planPanelTitle.textContent = '📋 Setup';
+    planSubtopics.innerHTML = phases.map((p, i) => `
+      <div class="plan-st"><div class="plan-st-title">${i + 1}. ${esc(p.label)}</div></div>`).join('');
+  }
 
   agentCards.innerHTML = agents.map(a => `
     <div class="agent-card" style="--agent-color: ${a.color}">
@@ -123,29 +236,35 @@ function renderPlanPreview() {
         <div class="agent-role">${esc(a.role)}</div>
         <div class="agent-perspective">${esc(a.perspective)}</div>
       </div>
-    </div>
-  `).join('');
+    </div>`).join('');
 }
 
 // ═══ Start ═══════════════════════════════════════════════════════════════
-async function startDiscussion() {
+async function startSession() {
   if (!sessionId) return;
-  topicDisplay.textContent = topicInput.value.trim();
-  renderSidebarProgress();
-  renderSidebarAgents();
+  const config = getConfigValues();
 
-  // Hide setup overlay with fade
-  if (setupOverlay) setupOverlay.classList.add('hidden');
-
-  // Host writes topic on blackboard
-  GameBridge.setTopic(topicInput.value.trim());
-  if (plan?.subTopics?.[0]) {
-    GameBridge.setSubtopic(plan.subTopics[0].title);
+  if (currentMode === 'discussion') {
+    topicDisplay.textContent = config.topic || '';
+  } else if (currentMode === 'werewolf') {
+    topicDisplay.textContent = '🐺 Werewolf';
+    godViewToggle.classList.remove('hidden');
   }
 
-  // Agents enter one by one
-  await GameBridge.enterAgents(agents);
+  renderSidebarProgress();
+  renderSidebarAgents();
+  if (setupOverlay) setupOverlay.classList.add('hidden');
 
+  // Game scene
+  if (currentMode === 'discussion') {
+    GameBridge.setTopic(config.topic || '');
+    if (plan?.subTopics?.[0]) GameBridge.setSubtopic(plan.subTopics[0].title);
+  } else {
+    GameBridge.setTopic('🐺 Werewolf');
+    GameBridge.setSubtopic(currentMode === 'werewolf' ? 'Night 1' : '');
+  }
+
+  await GameBridge.enterAgents(agents);
   agentSpeakCounts = {};
   renderHudProgress();
   renderHudAgents(null);
@@ -157,31 +276,38 @@ async function startDiscussion() {
 }
 
 function renderSidebarProgress() {
-  if (!plan) return;
-  sidebarProgress.innerHTML = plan.subTopics.map((st, i) => {
-    const cls = st.status === 'completed' ? 'completed' : st.status !== 'pending' ? 'active' : 'pending';
-    const icon = st.status === 'completed' ? '✅' : st.status !== 'pending' ? '▶' : '○';
-    return `<div class="progress-item ${cls}" id="prog-${st.id}">
-      <span class="progress-icon">${icon}</span>
-      <span>${esc(st.title)}</span>
-    </div>`;
-  }).join('');
+  if (currentMode === 'discussion' && plan) {
+    sidebarProgress.innerHTML = plan.subTopics.map((st, i) => {
+      const cls = st.status === 'completed' ? 'completed' : st.status !== 'pending' ? 'active' : 'pending';
+      const icon = st.status === 'completed' ? '✅' : st.status !== 'pending' ? '▶' : '○';
+      return `<div class="progress-item ${cls}" id="prog-${st.id}">
+        <span class="progress-icon">${icon}</span><span>${esc(st.title)}</span></div>`;
+    }).join('');
+  } else {
+    sidebarProgress.innerHTML = phases.map((p, i) => {
+      const cls = p.status === 'resolved' ? 'completed' : p.status === 'active' ? 'active' : 'pending';
+      const icon = p.status === 'resolved' ? '✅' : p.status === 'active' ? '▶' : '○';
+      return `<div class="progress-item ${cls}" id="prog-${p.id}">
+        <span class="progress-icon">${icon}</span><span>${esc(p.label)}</span></div>`;
+    }).join('');
+  }
 }
 
 function renderSidebarAgents() {
+  const extra = currentMode === 'discussion' ? [
+    `<div class="sidebar-agent" id="sa-critic" style="--agent-color: #4ECDC4"><span>🔍</span><span style="color: #4ECDC4">Critic</span></div>`,
+    `<div class="sidebar-agent" id="sa-planner" style="--agent-color: #FFB347"><span>📐</span><span style="color: #FFB347">Host</span></div>`,
+  ] : [
+    `<div class="sidebar-agent" id="sa-gm" style="--agent-color: #FFD700"><span>🎭</span><span style="color: #FFD700">Game Master</span></div>`,
+  ];
+
   sidebarAgents.innerHTML = [
     ...agents.map(a => `
       <div class="sidebar-agent" id="sa-${a.id}" style="--agent-color: ${a.color}">
-        <span>${a.emoji}</span>
-        <span style="color: ${a.color}">${esc(a.name)}</span>
-      </div>
-    `),
-    `<div class="sidebar-agent" id="sa-critic" style="--agent-color: #4ECDC4">
-      <span>🔍</span><span style="color: #4ECDC4">Critic</span>
-    </div>`,
-    `<div class="sidebar-agent" id="sa-planner" style="--agent-color: #FFB347">
-      <span>📐</span><span style="color: #FFB347">Host</span>
-    </div>`,
+        <span>${a.emoji}</span><span style="color: ${a.color}">${esc(a.name)}</span>
+        <span class="agent-role-badge hidden" id="role-badge-${a.id}"></span>
+      </div>`),
+    ...extra,
   ].join('');
 }
 
@@ -193,6 +319,7 @@ function connectSSE() {
   eventSource.addEventListener('init', e => {
     const data = JSON.parse(e.data);
     if (data.plan) plan = data.plan;
+    if (data.phases) phases = data.phases;
     if (data.messages?.length) {
       messagesEl.innerHTML = '';
       data.messages.forEach(m => appendCompleteMessage(m));
@@ -203,17 +330,13 @@ function connectSSE() {
   eventSource.addEventListener('message', e => {
     const msg = JSON.parse(e.data);
     appendCompleteMessage(msg);
-    if (msg.type === 'critic') {
-      GameBridge.showCriticFlag(msg.content.includes('✅'));
-    }
+    if (msg.type === 'critic') GameBridge.showCriticFlag(msg.content.includes('✅'));
   });
 
   eventSource.addEventListener('message_start', e => {
     const data = JSON.parse(e.data);
-
-    // Insert reasoning collapsible if we have pending reasoning for this agent
     const pr = pendingReasoning[data.agentId];
-    if (pr) {
+    if (pr && godViewEnabled) {
       const reasoningEl = document.createElement('details');
       reasoningEl.className = 'reasoning-block';
       reasoningEl.style.borderLeftColor = pr.color || '#666';
@@ -221,14 +344,11 @@ function connectSSE() {
       messagesEl.appendChild(reasoningEl);
       delete pendingReasoning[data.agentId];
     }
-
     const el = createMessageEl(data);
     messagesEl.appendChild(el);
     streamingMessages[data.id] = {
       el, content: '', bodyEl: el.querySelector('.message-body'),
-      isSummary: data.type === 'summary',
-      agentId: data.agentId,
-      color: data.color,
+      isSummary: data.type === 'summary', agentId: data.agentId, color: data.color,
     };
     showTyping(false);
     scrollToBottom();
@@ -247,9 +367,7 @@ function connectSSE() {
         scrollToBottom();
       });
     }
-    if (s.agentId) {
-      GameBridge.showBubble(s.agentId, s.content, s.color);
-    }
+    if (s.agentId) GameBridge.showBubble(s.agentId, s.content, s.color);
   });
 
   eventSource.addEventListener('message_end', e => {
@@ -257,10 +375,7 @@ function connectSSE() {
     const s = streamingMessages[id];
     if (s) {
       s.bodyEl.innerHTML = renderMarkdown(s.content);
-      if (s.isSummary) {
-        lastSummaryContent = s.content;
-        appendDownloadBar(s.el);
-      }
+      if (s.isSummary) { lastSummaryContent = s.content; appendDownloadBar(s.el); }
       const agent = agents.find(a => a.id === s.agentId);
       if (agent) addHudLog(agent.name, agent.color, s.content);
       delete streamingMessages[id];
@@ -293,56 +408,30 @@ function connectSSE() {
     toolEl.id = `tool-${agentId}`;
     toolEl.innerHTML = `
       <div class="tool-call-header">
-        <span class="tool-call-icon">⚡</span>
-        <span class="tool-call-label">Tool Call</span>
+        <span class="tool-call-icon">⚡</span><span class="tool-call-label">Tool Call</span>
         <span class="tool-call-fn">web_search</span>
         <span class="tool-call-agent" style="color: ${agents.find(a => a.id === agentId)?.color || '#aaa'}">${esc(agentName)}</span>
         <span class="tool-call-status loading">searching…</span>
-      </div>
-      <div class="tool-call-body">
-        <div class="tool-call-spinner"></div>
-      </div>`;
+      </div><div class="tool-call-body"><div class="tool-call-spinner"></div></div>`;
     messagesEl.appendChild(toolEl);
     scrollToBottom();
   });
 
   eventSource.addEventListener('research', e => {
-    const { agentId, agentName, query, content, citations, color } = JSON.parse(e.data);
+    const { agentId, query, content, citations } = JSON.parse(e.data);
     const toolEl = document.getElementById(`tool-${agentId}`);
     if (!toolEl) return;
-
     const statusEl = toolEl.querySelector('.tool-call-status');
-    if (statusEl) {
-      statusEl.textContent = `${citations.length} sources`;
-      statusEl.classList.remove('loading');
-      statusEl.classList.add('done');
-    }
-
-    const citationLinks = (citations || []).map((c, i) =>
-      `<a href="${esc(c)}" target="_blank" rel="noopener">[${i + 1}] ${esc(c)}</a>`
-    ).join('');
-
+    if (statusEl) { statusEl.textContent = `${citations.length} sources`; statusEl.classList.remove('loading'); statusEl.classList.add('done'); }
+    const citationLinks = (citations || []).map((c, i) => `<a href="${esc(c)}" target="_blank">[${i + 1}] ${esc(c)}</a>`).join('');
     const bodyEl = toolEl.querySelector('.tool-call-body');
-    if (bodyEl) {
-      bodyEl.innerHTML = `
-        <details class="tool-call-details" open>
-          <summary>Query & Results</summary>
-          <div class="tool-call-query">${esc(query)}</div>
-          <div class="tool-call-result">${renderMarkdown(content)}</div>
-          ${citationLinks ? `<div class="tool-call-citations">${citationLinks}</div>` : ''}
-        </details>`;
-    }
-
+    if (bodyEl) bodyEl.innerHTML = `<details class="tool-call-details" open><summary>Query & Results</summary><div class="tool-call-query">${esc(query)}</div><div class="tool-call-result">${renderMarkdown(content)}</div>${citationLinks ? `<div class="tool-call-citations">${citationLinks}</div>` : ''}</details>`;
     scrollToBottom();
-    const excerpt = content.length > 100 ? content.slice(0, 97) + '...' : content;
-    GameBridge.showBubble(agentId, '📚 ' + excerpt, color);
   });
 
   eventSource.addEventListener('reasoning', e => {
     const { agentId, agentName, reasoning, color, emoji } = JSON.parse(e.data);
-    // Store reasoning to attach to the next message from this agent
     pendingReasoning[agentId] = { agentName, reasoning, color, emoji };
-    // Show excerpt in game bubble
     const excerpt = reasoning.length > 120 ? reasoning.slice(0, 117) + '...' : reasoning;
     GameBridge.showBubble(agentId, '🧠 ' + excerpt, color);
   });
@@ -360,21 +449,67 @@ function connectSSE() {
 
   eventSource.addEventListener('subtopic_start', e => {
     const { index, subTopic } = JSON.parse(e.data);
-    if (plan) {
-      plan.subTopics[index] = subTopic;
-      renderSidebarProgress();
-      renderHudProgress();
-    }
+    if (plan) { plan.subTopics[index] = subTopic; renderSidebarProgress(); renderHudProgress(); }
     GameBridge.setSubtopic(subTopic.title);
   });
 
   eventSource.addEventListener('subtopic_complete', e => {
     const { index, subTopic } = JSON.parse(e.data);
-    if (plan) {
-      plan.subTopics[index] = subTopic;
-      renderSidebarProgress();
-      renderHudProgress();
+    if (plan) { plan.subTopics[index] = subTopic; renderSidebarProgress(); renderHudProgress(); }
+  });
+
+  // ── Werewolf-specific events ──
+
+  eventSource.addEventListener('phase_start', e => {
+    const { phase } = JSON.parse(e.data);
+    // Update phases list
+    const existing = phases.find(p => p.id === phase.id);
+    if (existing) Object.assign(existing, phase);
+    else phases.push(phase);
+    renderSidebarProgress();
+    renderHudProgress();
+    updatePhaseIndicator(phase);
+    GameBridge.setSubtopic(phase.label);
+  });
+
+  eventSource.addEventListener('night_resolution', e => {
+    const data = JSON.parse(e.data);
+    if (godViewEnabled) {
+      const el = document.createElement('details');
+      el.className = 'reasoning-block night-events';
+      el.style.borderLeftColor = '#8b5cf6';
+      el.innerHTML = `<summary>🌙 Night Events (God View)</summary>
+        <div class="reasoning-content">${data.events.map(ev => `<p>${ev}</p>`).join('')}</div>`;
+      messagesEl.appendChild(el);
+      scrollToBottom();
     }
+  });
+
+  eventSource.addEventListener('vote_result', e => {
+    const { votes, tally, eliminated, tied } = JSON.parse(e.data);
+    ctx_broadcast_vote(votes, tally, eliminated, tied);
+  });
+
+  eventSource.addEventListener('elimination', e => {
+    const { agentId, role, roleEmoji, roleName } = JSON.parse(e.data);
+    // Mark agent as eliminated in sidebar
+    const saEl = document.getElementById(`sa-${agentId}`);
+    if (saEl) { saEl.classList.add('eliminated'); saEl.style.opacity = '0.4'; }
+    // Show role badge
+    const badge = document.getElementById(`role-badge-${agentId}`);
+    if (badge) { badge.textContent = `${roleEmoji} ${roleName}`; badge.classList.remove('hidden'); }
+    GameBridge.eliminateAgent?.(agentId);
+  });
+
+  eventSource.addEventListener('role_reveal', e => {
+    const { agentId, role, roleEmoji } = JSON.parse(e.data);
+    const badge = document.getElementById(`role-badge-${agentId}`);
+    if (badge) { badge.textContent = `${roleEmoji}`; badge.classList.remove('hidden'); }
+  });
+
+  eventSource.addEventListener('critic_flag', e => {
+    const { approved } = JSON.parse(e.data);
+    GameBridge.showCriticFlag(approved);
   });
 
   eventSource.addEventListener('status', e => {
@@ -383,6 +518,19 @@ function connectSSE() {
   });
 
   eventSource.addEventListener('error', () => {});
+}
+
+function ctx_broadcast_vote(votes, tally, eliminated, tied) {
+  // Already handled by message from GM, this is extra UI if needed
+}
+
+function updatePhaseIndicator(phase) {
+  if (!phaseIndicator) return;
+  if (currentMode !== 'werewolf') { phaseIndicator.classList.add('hidden'); return; }
+  phaseIndicator.classList.remove('hidden');
+  const isNight = phase.type === 'night';
+  phaseIndicator.className = `phase-indicator ${isNight ? 'night' : 'day'}`;
+  phaseIndicator.textContent = phase.label;
 }
 
 function handleStatusChange(status) {
@@ -400,16 +548,11 @@ function handleStatusChange(status) {
     injectContainer.classList.add('hidden');
   } else if (status === 'completed') {
     completeTopic.textContent = topicDisplay.textContent;
-    summaryContent.innerHTML = lastSummaryContent
-      ? renderMarkdown(lastSummaryContent)
-      : '<p>No summary available.</p>';
-
-    // Show conflicts if any
+    summaryContent.innerHTML = lastSummaryContent ? renderMarkdown(lastSummaryContent) : '<p>Session completed.</p>';
     if (plan?.conflicts?.length) {
       conflictsSection.classList.remove('hidden');
       conflictsContent.innerHTML = plan.conflicts.map(c => `<p>• ${esc(c)}</p>`).join('');
     }
-
     showPhase('complete');
     if (eventSource) eventSource.close();
   }
@@ -422,6 +565,7 @@ function getTypeClass(type) {
   if (type === 'planner') return 'planner';
   if (type === 'critic') return 'critic';
   if (type === 'summary') return 'summary';
+  if (type === 'gm') return 'gm';
   return 'system';
 }
 
@@ -429,19 +573,14 @@ function createMessageEl(data) {
   const div = document.createElement('div');
   div.className = `message ${getTypeClass(data.type)}`;
   div.id = `msg-${data.id}`;
-
   if (data.type === 'user') {
-    div.innerHTML = `
-      <div class="message-header"><span class="message-name">You</span></div>
-      <div class="message-body"></div>`;
+    div.innerHTML = `<div class="message-header"><span class="message-name">You</span></div><div class="message-body"></div>`;
   } else {
-    div.innerHTML = `
-      <div class="message-header">
-        ${data.emoji ? `<span class="message-emoji">${data.emoji}</span>` : ''}
-        <span class="message-name" style="color: ${data.color || 'var(--text)'}">${esc(data.agentName)}</span>
-      </div>
-      <div class="message-body"></div>`;
-  div.style.setProperty('--agent-color', data.color || 'var(--text-dim)');
+    div.innerHTML = `<div class="message-header">
+      ${data.emoji ? `<span class="message-emoji">${data.emoji}</span>` : ''}
+      <span class="message-name" style="color: ${data.color || 'var(--text)'}">${esc(data.agentName)}</span>
+    </div><div class="message-body"></div>`;
+    div.style.setProperty('--agent-color', data.color || 'var(--text-dim)');
   }
   return div;
 }
@@ -469,7 +608,6 @@ function showTyping(show, name, state) {
 }
 
 let autoFollow = true;
-
 function scrollToBottom() {
   if (!autoFollow) return;
   requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; });
@@ -482,30 +620,16 @@ function updateFollowBtn() {
     btn.id = 'follow-btn';
     btn.className = 'btn follow-btn';
     btn.textContent = '↓ Follow';
-    btn.addEventListener('click', () => {
-      autoFollow = true;
-      btn.classList.add('hidden');
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    });
+    btn.addEventListener('click', () => { autoFollow = true; btn.classList.add('hidden'); messagesEl.scrollTop = messagesEl.scrollHeight; });
     messagesEl.parentElement.appendChild(btn);
   }
-  if (autoFollow) {
-    btn.classList.add('hidden');
-  } else {
-    btn.classList.remove('hidden');
-  }
+  btn.classList.toggle('hidden', autoFollow);
 }
 
-// Detect user scroll
 messagesEl.addEventListener('scroll', () => {
   const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
-  if (atBottom && !autoFollow) {
-    autoFollow = true;
-    updateFollowBtn();
-  } else if (!atBottom && autoFollow) {
-    autoFollow = false;
-    updateFollowBtn();
-  }
+  if (atBottom && !autoFollow) { autoFollow = true; updateFollowBtn(); }
+  else if (!atBottom && autoFollow) { autoFollow = false; updateFollowBtn(); }
 });
 
 function renderMarkdown(text) {
@@ -520,12 +644,12 @@ function esc(s) {
 }
 
 // ═══ Controls ════════════════════════════════════════════════════════════
-async function pauseDiscussion() {
+async function pauseSession() {
   try { await api('POST', `/session/${sessionId}/pause`); }
   catch (err) { alert('Pause failed: ' + err.message); }
 }
 
-async function resumeDiscussion() {
+async function resumeSession() {
   const msg = injectInput.value.trim();
   if (msg) {
     try { await api('POST', `/session/${sessionId}/inject`, { message: msg }); injectInput.value = ''; }
@@ -543,33 +667,25 @@ async function injectMessage() {
 }
 
 function exportMarkdown() {
-  let md = `# Research: ${topicDisplay.textContent}\n\n`;
+  let md = `# ${currentMode === 'werewolf' ? 'Werewolf Game' : 'Research: ' + topicDisplay.textContent}\n\n`;
   if (plan) {
     md += `## Discussion Plan\n`;
     plan.subTopics.forEach((st, i) => { md += `${i + 1}. **${st.title}** — ${st.goal}\n`; });
     md += `\n## Panel\n`;
-    agents.forEach(a => { md += `- ${a.emoji} **${a.name}** — ${a.role}\n`; });
-    md += `\n---\n\n`;
   }
+  agents.forEach(a => { md += `- ${a.emoji} **${a.name}** — ${a.role}\n`; });
+  md += `\n---\n\n`;
+
   fetch(`/api/session/${sessionId}`)
     .then(r => r.json())
     .then(data => {
-      let currentSt = '';
       data.messages.forEach(m => {
-        if (m.type === 'system' && m.content.includes('Sub-topic')) {
-          md += `\n${m.content}\n\n`;
-          currentSt = m.content;
-        } else if (m.type === 'planner') {
-          md += `> **📐 Host:** ${m.content}\n\n`;
-        } else if (m.type === 'critic') {
-          md += `> **🔍 Critic:** ${m.content}\n\n`;
-        } else if (m.type === 'user') {
-          md += `> **You:** ${m.content}\n\n`;
-        } else if (m.type === 'agent') {
-          md += `### ${m.emoji || ''} ${m.agentName}\n\n${m.content}\n\n---\n\n`;
-        } else if (m.type === 'summary') {
-          md += `\n## Final Report\n\n${m.content}\n`;
-        }
+        if (m.type === 'system') md += `\n${m.content}\n\n`;
+        else if (m.type === 'planner' || m.type === 'gm') md += `> **${m.agentName}:** ${m.content}\n\n`;
+        else if (m.type === 'critic') md += `> **🔍 Critic:** ${m.content}\n\n`;
+        else if (m.type === 'user') md += `> **You:** ${m.content}\n\n`;
+        else if (m.type === 'agent') md += `### ${m.emoji || ''} ${m.agentName}\n\n${m.content}\n\n---\n\n`;
+        else if (m.type === 'summary') md += `\n## Final Report\n\n${m.content}\n`;
       });
       const blob = new Blob([md], { type: 'text/markdown' });
       const url = URL.createObjectURL(blob);
@@ -582,49 +698,57 @@ function exportMarkdown() {
 function appendDownloadBar(afterEl) {
   const bar = document.createElement('div');
   bar.className = 'download-bar';
-  bar.innerHTML = `
-    <span class="download-bar-label">🏁 Discussion complete</span>
-    <button class="btn download-bar-btn" onclick="exportMarkdown()">📥 Download Report (.md)</button>
-    <button class="btn download-bar-btn secondary" onclick="newDiscussion()">🎙️ New Discussion</button>`;
+  bar.innerHTML = `<span class="download-bar-label">🏁 Session complete</span>
+    <button class="btn download-bar-btn" onclick="exportMarkdown()">📥 Download Report</button>
+    <button class="btn download-bar-btn secondary" onclick="newSession()">🎙️ New Session</button>`;
   afterEl.after(bar);
 }
 
-function newDiscussion() {
-  sessionId = null; agents = []; plan = null;
+function newSession() {
+  sessionId = null; agents = []; plan = null; phases = [];
   streamingMessages = {}; lastSummaryContent = '';
   pendingReasoning = {};
   if (eventSource) eventSource.close();
   messagesEl.innerHTML = '';
-  topicInput.value = ''; prefInput.value = '';
   planPanel.classList.add('hidden');
   conflictsSection.classList.add('hidden');
+  godViewToggle.classList.add('hidden');
+  phaseIndicator?.classList.add('hidden');
   GameBridge.destroy();
   agentSpeakCounts = {};
-  showPhase('setup');
+  showPhase('discussion');
+  setupOverlay?.classList.remove('hidden');
+  loadModes();
+  initGameOnLoad();
 }
 
 function renderHudProgress() {
-  if (!plan || !hudProgress) return;
-  hudProgress.innerHTML = plan.subTopics.map((st, i) => {
-    const cls = st.status === 'completed' ? 'done' : st.status !== 'pending' ? 'active' : '';
-    return `<div class="hud-step ${cls}"><span class="hud-step-num">${i + 1}</span><span class="hud-step-title">${esc(st.title)}</span></div>`;
-  }).join('');
+  if (!hudProgress) return;
+  if (currentMode === 'discussion' && plan) {
+    hudProgress.innerHTML = plan.subTopics.map((st, i) => {
+      const cls = st.status === 'completed' ? 'done' : st.status !== 'pending' ? 'active' : '';
+      return `<div class="hud-step ${cls}"><span class="hud-step-num">${i + 1}</span><span class="hud-step-title">${esc(st.title)}</span></div>`;
+    }).join('');
+  } else {
+    hudProgress.innerHTML = phases.map((p, i) => {
+      const cls = p.status === 'resolved' ? 'done' : p.status === 'active' ? 'active' : '';
+      return `<div class="hud-step ${cls}"><span class="hud-step-num">${i + 1}</span><span class="hud-step-title">${esc(p.label)}</span></div>`;
+    }).join('');
+  }
 }
 
 function renderHudAgents(speakingId) {
   if (!hudAgents) return;
-  const allAgents = [
-    ...agents.map(a => ({ id: a.id, emoji: a.emoji, name: a.name, color: a.color })),
-    { id: 'critic', emoji: '🔍', name: 'Critic', color: '#4ECDC4' },
-    { id: 'planner', emoji: '📐', name: 'Host', color: '#FFB347' },
-  ];
+  const extra = currentMode === 'discussion'
+    ? [{ id: 'critic', emoji: '🔍', name: 'Critic', color: '#4ECDC4' }, { id: 'planner', emoji: '📐', name: 'Host', color: '#FFB347' }]
+    : [{ id: 'gm', emoji: '🎭', name: 'GM', color: '#FFD700' }];
+  const allAgents = [...agents.map(a => ({ id: a.id, emoji: a.emoji, name: a.name, color: a.color })), ...extra];
   hudAgents.innerHTML = allAgents.map(a => {
     const count = agentSpeakCounts[a.id] || 0;
     const speaking = a.id === speakingId ? 'speaking' : '';
     return `<div class="hud-agent ${speaking}" style="--agent-color: ${a.color}">
       <span>${a.emoji}</span><span style="color:${a.color}">${esc(a.name)}</span>
-      ${count ? `<span class="hud-count">${count}</span>` : ''}
-    </div>`;
+      ${count ? `<span class="hud-count">${count}</span>` : ''}</div>`;
   }).join('');
 }
 
@@ -641,130 +765,28 @@ function addHudLog(name, color, text) {
 // ═══ Events ══════════════════════════════════════════════════════════════
 generateBtn.addEventListener('click', generatePlan);
 regenerateBtn.addEventListener('click', () => { planPanel.classList.add('hidden'); generatePlan(); });
-startBtn.addEventListener('click', startDiscussion);
-pauseBtn.addEventListener('click', pauseDiscussion);
-resumeBtn.addEventListener('click', resumeDiscussion);
+startBtn.addEventListener('click', startSession);
+pauseBtn.addEventListener('click', pauseSession);
+resumeBtn.addEventListener('click', resumeSession);
 injectBtn.addEventListener('click', injectMessage);
 injectInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); injectMessage(); } });
 exportBtn.addEventListener('click', exportMarkdown);
-newBtn.addEventListener('click', newDiscussion);
-topicInput.addEventListener('keydown', e => { if (e.key === 'Enter' && e.metaKey) { e.preventDefault(); generatePlan(); } });
+newBtn.addEventListener('click', newSession);
 
-// View toggle removed — game view only
-
-// ═══ Preview Mode ════════════════════════════════════════════════════════
-if (new URLSearchParams(location.search).has('preview')) {
-  const mockAgents = [
-    { id: 'a1', name: 'Alice', gender: 'female', role: 'Economist', perspective: 'Market dynamics', speakingStyle: 'analytical', color: '#FF6B6B', emoji: '📊' },
-    { id: 'a2', name: 'Bob', gender: 'male', role: 'Technologist', perspective: 'Engineering lens', speakingStyle: 'technical', color: '#6C63FF', emoji: '💻' },
-    { id: 'a3', name: 'Carol', gender: 'female', role: 'Ethicist', perspective: 'Moral implications', speakingStyle: 'thoughtful', color: '#4ECDC4', emoji: '⚖️' },
-    { id: 'a4', name: 'Dave', gender: 'male', role: 'Skeptic', perspective: 'Devil\'s advocate', speakingStyle: 'challenging', color: '#FFD93D', emoji: '🤔' },
-  ];
-  agents = mockAgents;
-  plan = {
-    subTopics: [
-      { id: 'st1', title: 'Economic Impact of AI Automation on Global Labor Markets and Workforce Displacement Patterns', goal: 'Analyze job displacement vs creation', dependsOn: [], status: 'discussing', summary: '', critiqueRounds: 0, discussionRounds: 0 },
-      { id: 'st2', title: 'Ethical Boundaries', goal: 'Where should we draw the line?', dependsOn: ['st1'], status: 'pending', summary: '', critiqueRounds: 0, discussionRounds: 0 },
-      { id: 'st3', title: 'Regulation Framework', goal: 'Global policy proposals', dependsOn: ['st1', 'st2'], status: 'pending', summary: '', critiqueRounds: 0, discussionRounds: 0 },
-    ],
-    currentIndex: 0, finalSynthesis: '', conflicts: [],
-  };
-
-  topicDisplay.textContent = 'The Future of AI — Economic, Ethical & Policy Perspectives';
-  renderSidebarProgress();
-  renderSidebarAgents();
-
-  // Hide setup overlay for preview
-  if (setupOverlay) setupOverlay.classList.add('hidden');
-
-  // Game already initialized by initGameOnLoad, just setup agents
-  setTimeout(() => {
-    GameBridge.setupAgents(mockAgents);
-    GameBridge.setTopic('The Future of AI');
-    GameBridge.setSubtopic('Economic Impact of AI Automation');
-  }, 500);
-  agentSpeakCounts = {};
-  renderHudProgress();
-  renderHudAgents(null);
-  hudLog.innerHTML = '';
-
-  const mockLines = [
-    { agentId: 'a1', agentName: 'Alice', color: '#FF6B6B', emoji: '📊',
-      text: 'From an economic perspective, AI automation presents a classic creative destruction cycle. Historical data from the first three industrial revolutions shows a consistent pattern: massive short-term job displacement followed by the emergence of entirely new industries and occupations within 10-15 years. However, the current wave differs in its velocity — McKinsey estimates that up to 375 million workers globally may need to switch occupational categories by 2030. The key question is not whether new jobs will emerge, but whether our retraining infrastructure can keep pace with the rate of displacement.' },
-    { agentId: 'a2', agentName: 'Bob', color: '#6C63FF', emoji: '💻',
-      text: 'I agree with Alice on the historical pattern, but the pace of AI adoption is fundamentally different from previous revolutions. We are not just automating physical labor — we are automating cognitive tasks: writing, analysis, coding, even creative work. GPT-class models can already outperform median-skill workers on many knowledge tasks. The displacement curve is exponential, not linear. Furthermore, unlike the industrial revolution, AI reduces the marginal cost of cognitive labor to near zero. Companies can now scale expertise without scaling headcount. The economic implications of this are profound and unprecedented.' },
-    { agentId: 'a3', agentName: 'Carol', color: '#4ECDC4', emoji: '⚖️',
-      text: 'The question is not just about economics — it is about human dignity and purpose. Even if new jobs emerge within a decade, the transition period causes real suffering to real families. We have an ethical obligation to consider the distributive justice implications. Who bears the cost of this transition? Historically, it has been the most vulnerable workers. A utilitarian calculus that says "net jobs increase in 15 years" ignores the concentrated harm done to displaced communities. We need ethical guardrails: universal basic income experiments, mandatory transition funds, and corporate responsibility frameworks.' },
-    { agentId: 'a4', agentName: 'Dave', color: '#FFD93D', emoji: '🤔',
-      text: 'Are we being too optimistic? Every technological revolution has its cheerleaders who promise that "this time, new jobs will appear." But what if this time is genuinely different? AI can learn, adapt, and improve continuously — unlike a steam engine or assembly line. The jobs that "emerge" may require skills that most displaced workers cannot realistically acquire. A 55-year-old truck driver is not going to become a machine learning engineer. I think we need to seriously consider the possibility that structural unemployment could become a permanent feature of AI-driven economies, not just a transitional phase.' },
-  ];
-
-  function simulateStream(lineIdx) {
-    if (lineIdx >= mockLines.length) {
-      setTimeout(() => {
-        GameBridge.stopAll();
-        const approved = true;
-        GameBridge.showCriticFlag(approved);
-        appendCompleteMessage({ id: 'crit1', agentId: 'critic', agentName: '🔍 Critic', type: 'critic',
-          content: '✅ **Approved.** All four perspectives provide substantive, well-reasoned positions. Good tension between optimists and skeptics.' });
-        addHudLog('Critic', '#4ECDC4', '✅ Approved — Good tension between optimists and skeptics.');
-      }, 1500);
-      return;
-    }
-
-    const line = mockLines[lineIdx];
-    const thinkDuration = 2000 + Math.random() * 1000;
-
-    const saEl = document.getElementById(`sa-${line.agentId}`);
-    document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
-    if (saEl) saEl.classList.add('thinking');
-    showTyping(true, line.agentName, 'thinking');
-    GameBridge.setThinking(line.agentId);
-    renderHudAgents(null);
-
-    setTimeout(() => {
-      document.querySelectorAll('.sidebar-agent').forEach(el => el.classList.remove('speaking', 'thinking'));
-      if (saEl) saEl.classList.add('speaking');
-      showTyping(true, line.agentName, 'speaking');
-      GameBridge.setSpeaking(line.agentId);
-      agentSpeakCounts[line.agentId] = (agentSpeakCounts[line.agentId] || 0) + 1;
-      renderHudAgents(line.agentId);
-
-      const msgId = 'mock-' + lineIdx;
-      const el = createMessageEl({ id: msgId, agentId: line.agentId, agentName: line.agentName, type: 'agent', color: line.color, emoji: line.emoji });
-      messagesEl.appendChild(el);
-      const bodyEl = el.querySelector('.message-body');
-
-      const words = line.text.split(' ');
-      let content = '';
-      let wordIdx = 0;
-      const chunkInterval = setInterval(() => {
-        if (wordIdx >= words.length) {
-          clearInterval(chunkInterval);
-          bodyEl.innerHTML = renderMarkdown(content);
-          scrollToBottom();
-          GameBridge.hideBubble();
-          addHudLog(line.agentName, line.color, content);
-          setTimeout(() => simulateStream(lineIdx + 1), 800);
-          return;
-        }
-        const chunkSize = 1 + Math.floor(Math.random() * 3);
-        const chunk = words.slice(wordIdx, wordIdx + chunkSize).join(' ') + ' ';
-        wordIdx += chunkSize;
-        content += chunk;
-        bodyEl.innerHTML = renderMarkdown(content);
-        scrollToBottom();
-        GameBridge.showBubble(line.agentId, content, line.color);
-      }, 60 + Math.random() * 40);
-    }, thinkDuration);
-  }
-
-  setTimeout(() => {
-    appendCompleteMessage({ id: 'sys1', agentId: 'system', agentName: 'System', type: 'system',
-      content: '📋 **Sub-topic 1/3: Economic Impact of AI Automation**\n\n*Goal: Analyze job displacement vs creation*' });
-    setTimeout(() => simulateStream(0), 500);
-  }, 1000);
+if (godViewCheckbox) {
+  godViewCheckbox.addEventListener('change', () => {
+    godViewEnabled = godViewCheckbox.checked;
+    document.querySelectorAll('.reasoning-block, .night-events').forEach(el => {
+      el.style.display = godViewEnabled ? '' : 'none';
+    });
+  });
 }
 
-// ═══ Init game on page load ══════════════════════════════════════════════
+// Keyboard shortcut: Cmd+Enter to generate
+configForm.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.metaKey) { e.preventDefault(); generatePlan(); }
+});
+
+// ═══ Init ════════════════════════════════════════════════════════════════
 initGameOnLoad();
+loadModes();

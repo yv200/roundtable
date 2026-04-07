@@ -1,15 +1,40 @@
-import type { AgentConfig, ChatMessage, DiscussionPlan, Message, Session, SubTopic } from './types.js';
-import { chatCompletion, streamChatCompletion, parseJSONResponse } from './llm.js';
+import type { AgentConfig, ChatMessage, Message, Session, Phase } from '../../core/types.js';
+import { getLanguageInstruction } from '../../core/types.js';
+import { chatCompletion, streamChatCompletion, parseJSONResponse } from '../../core/llm.js';
+
+// ── Discussion-specific types ────────────────────────────────────────────
+
+export interface SubTopic {
+  id: string;
+  title: string;
+  goal: string;
+  dependsOn: string[];
+  status: 'pending' | 'discussing' | 'under_review' | 'completed' | 'revisiting';
+  summary: string;
+  critiqueRounds: number;
+  discussionRounds: number;
+}
+
+export interface DiscussionPlan {
+  subTopics: SubTopic[];
+  currentIndex: number;
+  finalSynthesis: string;
+  conflicts: string[];
+}
+
+// ── Constants ────────────────────────────────────────────────────────────
 
 const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F8B500'];
 const EMOJIS = ['🔬', '💡', '⚖️', '🎯', '🌍', '🔮', '📊', '🧩'];
 
-// ── Create full plan: agents + sub-topics ────────────────────────────────
+// ── Create full plan: agents + sub-topics → Phases ───────────────────────
 
 export async function createPlan(
   topic: string,
   agentPreference?: string,
-): Promise<{ agents: AgentConfig[]; plan: DiscussionPlan }> {
+  config?: Record<string, any>,
+): Promise<{ agents: AgentConfig[]; plan: DiscussionPlan; phases: Phase[] }> {
+  const langInst = getLanguageInstruction(config || {});
   const system = `You are a research discussion planner. Given a topic, you must:
 
 1. Design 3-5 discussion panel members with DISTINCT perspectives
@@ -22,7 +47,7 @@ Each agent MUST have a unique speaking style. Do NOT make them all sound like po
 - Some are big-picture visionaries
 - Some are pragmatic practitioners who care about "does it actually work?"
 
-Also give agents built-in TENSIONS: at least 2 agents should have perspectives that naturally clash. For example, an innovation advocate vs. a risk manager; a cost optimizer vs. a quality purist.
+Also give agents built-in TENSIONS: at least 2 agents should have perspectives that naturally clash.
 
 Respond in strict JSON (no markdown fences):
 {
@@ -32,7 +57,7 @@ Respond in strict JSON (no markdown fences):
       "gender": "male or female — MUST match the name and identity of the character",
       "role": "One-line role title",
       "perspective": "What unique angle this agent brings (1-2 sentences)",
-      "speakingStyle": "How this agent communicates: tone, structure, verbal habits. Be specific. e.g. 'Blunt and numbers-obsessed. Opens with data, distrusts abstract claims. Often says things like 没有数据支撑的观点就是空谈. Uses short punchy sentences.' or 'Storyteller who thinks in analogies. Tends to say 这让我想起一个案例... Warm but will quietly dismantle weak arguments with pointed questions.'"
+      "speakingStyle": "How this agent communicates: tone, structure, verbal habits. Be specific."
     }
   ],
   "subTopics": [
@@ -44,7 +69,7 @@ Respond in strict JSON (no markdown fences):
   ]
 }
 
-The sub-topics should progress from foundational understanding → analysis → synthesis → actionable conclusions.`;
+The sub-topics should progress from foundational understanding → analysis → synthesis → actionable conclusions.${langInst}`;
 
   const user = agentPreference
     ? `Topic: ${topic}\n\nPanel preferences: ${agentPreference}`
@@ -79,21 +104,49 @@ The sub-topics should progress from foundational understanding → analysis → 
     discussionRounds: 0,
   }));
 
-  return {
-    agents,
-    plan: { subTopics, currentIndex: 0, finalSynthesis: '', conflicts: [] },
+  const plan: DiscussionPlan = {
+    subTopics,
+    currentIndex: 0,
+    finalSynthesis: '',
+    conflicts: [],
   };
+
+  // Convert subTopics → Phases + synthesis phase
+  const phases: Phase[] = subTopics.map((st, i) => ({
+    id: st.id,
+    type: 'subtopic',
+    label: st.title,
+    status: 'pending' as const,
+    metadata: {
+      index: i,
+      title: st.title,
+      goal: st.goal,
+      summary: '',
+      critiqueRounds: 0,
+      discussionRounds: 0,
+    },
+  }));
+
+  phases.push({
+    id: 'synthesis',
+    type: 'synthesis',
+    label: 'Final Synthesis',
+    status: 'pending',
+    metadata: {},
+  });
+
+  return { agents, plan, phases };
 }
 
 // ── Introduce a sub-topic ────────────────────────────────────────────────
 
 export async function introduceSubTopic(
-  subTopic: SubTopic,
+  subTopicData: { title: string; goal: string },
   session: Session,
 ): Promise<string> {
-  const previousSummaries = session.plan!.subTopics
-    .filter(st => st.status === 'completed')
-    .map(st => `【${st.title}】${st.summary}`)
+  const previousSummaries = session.phases
+    .filter(p => p.type === 'subtopic' && p.status === 'resolved')
+    .map(p => `【${p.metadata.title}】${p.metadata.summary}`)
     .join('\n');
 
   const system = `You are the discussion planner/moderator. Introduce the next sub-topic to the panel.
@@ -104,13 +157,13 @@ Your introduction should:
 3. If previous sub-topics have been discussed, connect this one to those findings
 4. Keep it concise (2-3 short paragraphs)
 
-Do NOT give your own opinion — just frame the discussion for others.`;
+Do NOT give your own opinion — just frame the discussion for others.${getLanguageInstruction(session.config)}`;
 
   const context = previousSummaries
     ? `Previous sub-topic conclusions:\n${previousSummaries}\n\n`
     : '';
 
-  const user = `${context}Now introduce this sub-topic:\nTitle: ${subTopic.title}\nGoal: ${subTopic.goal}`;
+  const user = `${context}Now introduce this sub-topic:\nTitle: ${subTopicData.title}\nGoal: ${subTopicData.goal}`;
 
   return chatCompletion(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
@@ -121,19 +174,19 @@ Do NOT give your own opinion — just frame the discussion for others.`;
 // ── Review sub-topic completion ──────────────────────────────────────────
 
 export async function reviewSubTopic(
-  subTopic: SubTopic,
+  subTopicData: { title: string; goal: string },
   messages: Message[],
-  session: Session,
+  phaseId: string,
 ): Promise<{ complete: boolean; summary: string; feedback: string }> {
   const discussion = messages
-    .filter(m => m.subTopicId === subTopic.id && (m.type === 'agent' || m.type === 'critic'))
+    .filter(m => m.phaseId === phaseId && (m.type === 'agent' || m.type === 'critic'))
     .map(m => `[${m.agentName}]: ${m.content}`)
     .join('\n\n');
 
   const system = `You are the discussion planner reviewing whether a sub-topic has been adequately discussed.
 
-Sub-topic: ${subTopic.title}
-Goal: ${subTopic.goal}
+Sub-topic: ${subTopicData.title}
+Goal: ${subTopicData.goal}
 
 Evaluate:
 1. Has the goal been addressed with sufficient depth?
@@ -159,15 +212,16 @@ Respond in strict JSON:
 // ── Final synthesis ──────────────────────────────────────────────────────
 
 export function synthesizeFinal(session: Session): AsyncGenerator<string> {
-  const subTopicSummaries = session.plan!.subTopics
-    .map(st => `### ${st.title}\n**Goal:** ${st.goal}\n**Conclusion:** ${st.summary}`)
+  const subTopicSummaries = session.phases
+    .filter(p => p.type === 'subtopic')
+    .map(p => `### ${p.metadata.title}\n**Goal:** ${p.metadata.goal}\n**Conclusion:** ${p.metadata.summary || 'N/A'}`)
     .join('\n\n');
 
   const agentList = session.agents.map(a => `${a.emoji} ${a.name} — ${a.role}`).join('\n');
 
   const system = `You are the discussion planner writing the final comprehensive research report.
 
-Topic: ${session.topic}
+Topic: ${session.config.topic}
 
 Panel:
 ${agentList}
@@ -183,7 +237,7 @@ Write a well-structured final report that:
 5. Actionable recommendations with concrete next steps
 6. Open questions for future exploration
 
-Use markdown headers and bullet points. Be thorough but concise. Focus on INSIGHTS that emerged from the multi-perspective discussion, not just restating individual opinions.`;
+Use markdown headers and bullet points. Be thorough but concise.${getLanguageInstruction(session.config)}`;
 
   const msgs: ChatMessage[] = [
     { role: 'system', content: system },
@@ -197,7 +251,6 @@ Use markdown headers and bullet points. Be thorough but concise. Focus on INSIGH
 
 export async function checkConflicts(
   synthesis: string,
-  session: Session,
 ): Promise<{ hasConflicts: boolean; conflicts: string[] }> {
   const system = `You are reviewing a discussion synthesis for internal contradictions or unresolved conflicts.
 

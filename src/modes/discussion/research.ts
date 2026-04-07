@@ -1,4 +1,4 @@
-import type { AgentConfig, SubTopic } from './types.js';
+import type { AgentConfig } from '../../core/types.js';
 
 export interface ResearchResult {
   query: string;
@@ -51,12 +51,12 @@ export async function webSearch(query: string): Promise<ResearchResult> {
 
 export async function agentResearch(
   agent: AgentConfig,
-  subTopic: SubTopic,
+  subTopicData: { title: string; goal: string },
   topic: string,
 ): Promise<ResearchResult | null> {
   if (!searchEnabled()) return null;
 
-  const query = `${subTopic.title} — ${subTopic.goal}\n\nFocus: ${agent.role} perspective (${agent.perspective}).\nBroader topic: ${topic}`;
+  const query = `${subTopicData.title} — ${subTopicData.goal}\n\nFocus: ${agent.role} perspective (${agent.perspective}).\nBroader topic: ${topic}`;
 
   try {
     return await webSearch(query);

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Roundtable v2 — Structured Multi-Agent Research</title>
+  <title>Roundtable v2 — Multi-Agent Games</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
@@ -39,7 +39,6 @@
               <div class="bubble-text"></div>
               <div class="bubble-tail"></div>
             </div>
-
           </div>
 
   <!-- Setup overlay — fixed to window center -->
@@ -47,25 +46,41 @@
     <div class="setup-overlay-inner">
       <div class="logo">🎙️</div>
       <h2>Roundtable <span class="version">v2</span></h2>
-      <div class="setup-form">
-        <textarea id="topic-input" rows="3"
-          placeholder="What should the agents research and discuss?"></textarea>
-        <textarea id="pref-input" rows="2"
-          placeholder='Panel preferences (optional, e.g. "Include an economist and a skeptic")'></textarea>
-        <button id="generate-btn" class="btn primary">
-          <span class="btn-text">Generate Plan</span>
-          <span class="btn-loading hidden">⏳ Host is planning...</span>
-        </button>
+
+      <!-- Mode Selector -->
+      <div id="mode-selector" class="mode-selector">
+        <div class="mode-card selected" data-mode="discussion">
+          <span class="mode-icon">🎙️</span>
+          <div class="mode-info">
+            <div class="mode-name">Discussion</div>
+            <div class="mode-desc">Multi-agent research discussion</div>
+          </div>
+        </div>
+        <div class="mode-card" data-mode="werewolf">
+          <span class="mode-icon">🐺</span>
+          <div class="mode-info">
+            <div class="mode-name">Werewolf</div>
+            <div class="mode-desc">AI 狼人杀</div>
+          </div>
+        </div>
       </div>
 
+      <!-- Dynamic config form (rendered from configSchema) -->
+      <div id="config-form" class="setup-form"></div>
+
+      <button id="generate-btn" class="btn primary" style="width:100%;justify-content:center;margin-top:1rem;">
+        <span class="btn-text">Generate Plan</span>
+        <span class="btn-loading hidden">⏳ Setting up...</span>
+      </button>
+
       <div id="plan-panel" class="hidden">
-        <h3>📐 Sub-topics</h3>
+        <h3 id="plan-panel-title">📐 Sub-topics</h3>
         <div id="plan-subtopics"></div>
-        <h3>👥 Discussion Panel</h3>
+        <h3>👥 Panel</h3>
         <div id="agent-cards"></div>
         <div class="panel-actions">
           <button id="regenerate-btn" class="btn secondary">🔄 Regenerate</button>
-          <button id="start-btn" class="btn primary">▶ Start Discussion</button>
+          <button id="start-btn" class="btn primary">▶ Start</button>
         </div>
       </div>
     </div>
@@ -74,6 +89,10 @@
             <div id="hud-progress"></div>
             <div id="hud-agents"></div>
           </div>
+
+          <!-- Phase indicator (werewolf) -->
+          <div id="phase-indicator" class="hidden"></div>
+
           <div id="hud-log"></div>
         </div>
 
@@ -88,6 +107,12 @@
 
       <div id="controls">
         <button id="pause-btn" class="btn">⏸ Pause</button>
+        <div id="god-view-toggle" class="hidden">
+          <label class="toggle-label">
+            <input type="checkbox" id="god-view-checkbox" checked />
+            <span>👁️ God View</span>
+          </label>
+        </div>
         <div id="inject-container" class="hidden">
           <input id="inject-input" type="text" placeholder="Add your thoughts…" />
           <button id="inject-btn" class="btn">Send</button>
@@ -101,7 +126,7 @@
       <div class="complete-container">
         <div class="complete-header">
           <div class="logo">✅</div>
-          <h1>Research Complete</h1>
+          <h1>Complete</h1>
           <p class="subtitle" id="complete-topic"></p>
         </div>
         <div id="summary-content"></div>
@@ -111,7 +136,7 @@
         </div>
         <div class="complete-actions">
           <button id="export-btn" class="btn secondary">📋 Export Markdown</button>
-          <button id="new-btn" class="btn primary">🎙️ New Research</button>
+          <button id="new-btn" class="btn primary">🎙️ New Session</button>
         </div>
       </div>
     </section>

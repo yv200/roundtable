@@ -14,15 +14,41 @@ const CHAR_STAND_H = 82;
 const HOST_H = 82;
 const CRITIC_H = 82;
 
-// Circular layout around table (160x130, center 500,340)
-const SEAT_POSITIONS = [
-  { x: 440, y: 270, side: 'back' },   // back-left
-  { x: 560, y: 270, side: 'back' },   // back-right
-  { x: 380, y: 345, side: 'left' },   // mid-left
-  { x: 620, y: 345, side: 'right' },  // mid-right
-  { x: 440, y: 420, side: 'front' },  // front-left
-  { x: 560, y: 420, side: 'front' },  // front-right
-];
+// Dynamic elliptical layout around table
+// Generates seat positions based on player count
+function generateSeatPositions(count) {
+  if (count <= 0) return [];
+
+  // Ellipse parameters — fits around the table nicely
+  const cx = TABLE_CX;
+  const cy = TABLE_CY;
+  const rx = 120 + Math.max(0, count - 6) * 8;  // wider for more people
+  const ry = 85 + Math.max(0, count - 6) * 5;
+
+  const seats = [];
+  // Start from top-left, go clockwise
+  // Offset so seats are symmetric: start from -PI/2 + half-step
+  const startAngle = -Math.PI / 2;
+
+  for (let i = 0; i < count; i++) {
+    const angle = startAngle + (i / count) * Math.PI * 2;
+    const x = Math.round(cx + rx * Math.cos(angle));
+    const y = Math.round(cy + ry * Math.sin(angle));
+
+    // Determine side for depth sorting
+    let side;
+    if (y < cy - 20) side = 'back';
+    else if (y > cy + 20) side = 'front';
+    else if (x < cx) side = 'left';
+    else side = 'right';
+
+    seats.push({ x, y, side });
+  }
+  return seats;
+}
+
+// Default 6-seat layout (overridden dynamically in scene setup)
+let SEAT_POSITIONS = generateSeatPositions(6);
 
 const HOST_POS = { x: 160, y: 150 };
 const CRITIC_POS = { x: 840, y: 150 };
@@ -205,8 +231,11 @@ class RoundtableScene extends Phaser.Scene {
     let femaleIdx = 0;
     let maleIdx = 0;
 
+    // Regenerate seat layout based on actual player count
+    SEAT_POSITIONS = generateSeatPositions(agents.length);
+
     agents.forEach((agent, i) => {
-      const seat = SEAT_POSITIONS[i % SEAT_POSITIONS.length];
+      const seat = SEAT_POSITIONS[i];
       const isFemale = agent.gender === 'female';
       const spriteIdx = isFemale
         ? FEMALE_SPRITES[(femaleIdx++) % FEMALE_SPRITES.length]
